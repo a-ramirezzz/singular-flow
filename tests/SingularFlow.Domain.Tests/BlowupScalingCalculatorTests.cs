@@ -7,11 +7,19 @@ public sealed class BlowupScalingCalculatorTests
 {
     private readonly BlowupScalingCalculator _calculator = new();
 
+    private readonly BlowupParameters _parameters =
+        BlowupParameters.Default;
+
     [Fact]
     public void Calculate_WhenTimeApproachesSingularity_IncreasesAngularVelocity()
     {
-        BlowupState earlierState = _calculator.Calculate(time: 0.9);
-        BlowupState laterState = _calculator.Calculate(time: 0.99);
+        BlowupState earlierState = _calculator.Calculate(
+            time: 0.9,
+            parameters: _parameters);
+
+        BlowupState laterState = _calculator.Calculate(
+            time: 0.99,
+            parameters: _parameters);
 
         Assert.True(
             laterState.AngularVelocityScale >
@@ -21,8 +29,13 @@ public sealed class BlowupScalingCalculatorTests
     [Fact]
     public void Calculate_WhenTimeApproachesSingularity_DecreasesCoreEnergy()
     {
-        BlowupState earlierState = _calculator.Calculate(time: 0.9);
-        BlowupState laterState = _calculator.Calculate(time: 0.99);
+        BlowupState earlierState = _calculator.Calculate(
+            time: 0.9,
+            parameters: _parameters);
+
+        BlowupState laterState = _calculator.Calculate(
+            time: 0.99,
+            parameters: _parameters);
 
         Assert.True(
             laterState.CoreEnergyScale <
@@ -33,6 +46,8 @@ public sealed class BlowupScalingCalculatorTests
     public void Calculate_WhenTimeEqualsSingularTime_ThrowsException()
     {
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => _calculator.Calculate(time: 1.0));
+            () => _calculator.Calculate(
+                time: _parameters.SingularTime,
+                parameters: _parameters));
     }
 }

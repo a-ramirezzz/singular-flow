@@ -127,6 +127,7 @@ singular-flow/
 │       ├── Calculations/
 │       │   └── BlowupScalingCalculator.cs
 │       ├── Models/
+│       │   ├── BlowupParameters.cs
 │       │   └── BlowupState.cs
 │       └── SingularFlow.Domain.csproj
 ├── tests/
@@ -363,6 +364,3 @@ SingularFlow follows these principles:
 * [Lean formalization repository](https://github.com/openai/NavierStokesAndEuler)
 * [Official Navier–Stokes problem description](https://www.claymath.org/wp-content/uploads/2022/06/navierstokes.pdf)
 
-## Author
-
-**Alan Rodrigo Ramírez Luna**
