@@ -1,0 +1,56 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Display .NET information
+        run: dotnet --info
+
+      - name: Restore dependencies
+        run: dotnet restore SingularFlow.slnx
+
+      - name: Verify formatting
+        run: >
+          dotnet format SingularFlow.slnx
+          --verify-no-changes
+          --no-restore
+
+      - name: Build solution
+        run: >
+          dotnet build SingularFlow.slnx
+          --configuration Release
+          --no-restore
+
+      - name: Run automated tests
+        run: >
+          dotnet test SingularFlow.slnx
+          --configuration Release
+          --no-build
+          --logger "console;verbosity=normal"

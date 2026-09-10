@@ -20,6 +20,7 @@ The current version calculates and displays how selected vortex-core scales chan
 * Reject non-finite and out-of-range values.
 * Display calculated results through a command-line interface.
 * Verify domain behavior with automated tests.
+* Represent simulation configuration through an immutable domain value object.
 
 ## Mathematical model
 
@@ -97,6 +98,7 @@ SingularFlow — Blow-up scaling model
 * .NET 10
 * xUnit
 * Git
+* GitHub Actions
 
 ## Planned technologies
 
@@ -110,7 +112,6 @@ Future versions are expected to introduce:
 * Blazor
 * Interactive data visualization
 * Docker
-* GitHub Actions
 * Automated integration tests
 
 Planned technologies will only be added when the project has a concrete requirement for them.
@@ -119,6 +120,9 @@ Planned technologies will only be added when the project has a concrete requirem
 
 ```text
 singular-flow/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── src/
 │   ├── SingularFlow.Cli/
 │   │   ├── Program.cs
@@ -146,6 +150,8 @@ singular-flow/
 The initial solution contains three projects.
 
 ### SingularFlow.Domain
+
+[![Continuous Integration](https://github.com/a-ramirezzz/singular-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/a-ramirezzz/singular-flow/actions/workflows/ci.yml)
 
 Contains the mathematical behavior and domain models.
 
@@ -259,7 +265,21 @@ Run the tests using the Release configuration:
 dotnet test --configuration Release
 ```
 
-## Format
+## 
+
+## Continuous integration
+
+GitHub Actions validates every pull request targeting `main` and every push to
+`main`.
+
+The workflow performs the following steps:
+
+1. Check out the repository.
+2. Install the .NET SDK declared in `global.json`.
+3. Restore dependencies.
+4. Verify code formatting.
+5. Build the solution in Release mode.
+6. Run all automated tests.
 
 Apply the formatting rules defined by `.editorconfig`:
 
