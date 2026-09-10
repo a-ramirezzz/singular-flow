@@ -2,24 +2,44 @@
 using SingularFlow.Domain.Models;
 
 BlowupScalingCalculator calculator = new();
-BlowupParameters parameters = BlowupParameters.Default;
 
-double[] times =
-[
-    0.0,
-    0.5,
-    0.9,
-    0.99,
-    0.999,
-    0.9999
-];
+BlowupSeriesGenerator seriesGenerator = new(
+    calculator);
 
-Console.WriteLine("SingularFlow — Blow-up scaling model");
+BlowupParameters blowupParameters =
+    BlowupParameters.Default;
+
+TimeSeriesParameters seriesParameters = new(
+    startTime: 0.0,
+    endTime: 0.9999,
+    sampleCount: 6);
+
+IReadOnlyList<BlowupState> states =
+    seriesGenerator.Generate(
+        blowupParameters,
+        seriesParameters);
+
+Console.WriteLine(
+    "SingularFlow — Blow-up scaling model");
+
 Console.WriteLine();
-Console.WriteLine($"Singular time: {parameters.SingularTime:F4}");
+
+Console.WriteLine(
+    $"Singular time: " +
+    $"{blowupParameters.SingularTime:F4}");
+
 Console.WriteLine(
     $"Concentration exponent: " +
-    $"{parameters.ConcentrationExponent:F4}");
+    $"{blowupParameters.ConcentrationExponent:F4}");
+
+Console.WriteLine(
+    $"Sampling interval: " +
+    $"[{seriesParameters.StartTime:F4}, " +
+    $"{seriesParameters.EndTime:F4}]");
+
+Console.WriteLine(
+    $"Sample count: " +
+    $"{seriesParameters.SampleCount}");
 
 Console.WriteLine();
 
@@ -33,12 +53,8 @@ Console.WriteLine(
 
 Console.WriteLine(new string('-', 96));
 
-foreach (double time in times)
+foreach (BlowupState state in states)
 {
-    BlowupState state = calculator.Calculate(
-        time,
-        parameters);
-
     Console.WriteLine(
         $"{state.Time,10:F4} " +
         $"{state.RemainingTime,14:E4} " +
