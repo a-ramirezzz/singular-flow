@@ -6,15 +6,22 @@ public sealed class BlowupScalingCalculator
 {
     public BlowupState Calculate(
         double time,
-        double singularTime = 1.0,
-        double h = 0.005)
+        BlowupParameters parameters)
     {
-        ValidateParameters(time, singularTime, h);
+        ArgumentNullException.ThrowIfNull(parameters);
 
-        double remainingTime = singularTime - time;
+        ValidateTime(time, parameters.SingularTime);
 
-        double radialLength = Math.Pow(remainingTime, 0.5);
-        double axialLength = Math.Pow(remainingTime, 0.5 - h);
+        double remainingTime =
+            parameters.SingularTime - time;
+
+        double h = parameters.ConcentrationExponent;
+
+        double radialLength =
+            Math.Pow(remainingTime, 0.5);
+
+        double axialLength =
+            Math.Pow(remainingTime, 0.5 - h);
 
         double angularVelocityScale =
             Math.Pow(remainingTime, -0.5 - h);
@@ -39,10 +46,9 @@ public sealed class BlowupScalingCalculator
             CoreEnergyScale: coreEnergyScale);
     }
 
-    private static void ValidateParameters(
+    private static void ValidateTime(
         double time,
-        double singularTime,
-        double h)
+        double singularTime)
     {
         if (!double.IsFinite(time))
         {
@@ -51,25 +57,12 @@ public sealed class BlowupScalingCalculator
                 "Time must be a finite number.");
         }
 
-        if (!double.IsFinite(singularTime) || singularTime <= 0)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(singularTime),
-                "Singular time must be a finite positive number.");
-        }
-
         if (time < 0 || time >= singularTime)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(time),
-                "Time must be greater than or equal to zero and less than singular time.");
-        }
-
-        if (!double.IsFinite(h) || h <= 0 || h >= 0.01)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(h),
-                "The parameter h must satisfy 0 < h < 0.01.");
+                "Time must be greater than or equal to zero " +
+                "and less than singular time.");
         }
     }
 }
