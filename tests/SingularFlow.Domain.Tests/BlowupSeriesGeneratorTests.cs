@@ -1,5 +1,6 @@
 using SingularFlow.Domain.Calculations;
 using SingularFlow.Domain.Models;
+using SingularFlow.Domain.Sampling;
 
 namespace SingularFlow.Domain.Tests;
 
@@ -17,18 +18,77 @@ public sealed class BlowupSeriesGeneratorTests
     [Fact]
     public void Constructor_WhenCalculatorIsNull_ThrowsException()
     {
+        ITimeSamplingStrategy samplingStrategy =
+            new UniformTimeSamplingStrategy();
+
         ArgumentNullException exception =
             Assert.Throws<ArgumentNullException>(
                 () => new BlowupSeriesGenerator(
-                    calculator: null!));
+                    calculator: null!,
+                    samplingStrategy: samplingStrategy));
 
-        Assert.Equal("calculator", exception.ParamName);
+        Assert.Equal(
+            "calculator",
+            exception.ParamName);
+    }
+
+    [Fact]
+    public void Constructor_WhenSamplingStrategyIsNull_ThrowsException()
+    {
+        BlowupScalingCalculator calculator = new();
+
+        ArgumentNullException exception =
+            Assert.Throws<ArgumentNullException>(
+                () => new BlowupSeriesGenerator(
+                    calculator: calculator,
+                    samplingStrategy: null!));
+
+        Assert.Equal(
+            "samplingStrategy",
+            exception.ParamName);
+    }
+
+    [Fact]
+    public void Generate_WhenStrategyProvidesTimes_CalculatesStatesForThoseTimes()
+    {
+        double[] expectedTimes =
+        [
+            0.0,
+            0.1,
+            0.4,
+            0.7,
+            0.8
+        ];
+
+        ITimeSamplingStrategy samplingStrategy =
+            new StubTimeSamplingStrategy(
+                expectedTimes);
+
+        BlowupSeriesGenerator generator = new(
+            new BlowupScalingCalculator(),
+            samplingStrategy);
+
+        IReadOnlyList<BlowupState> states =
+            generator.Generate(
+                _blowupParameters,
+                _seriesParameters);
+
+        Assert.Equal(expectedTimes.Length, states.Count);
+
+        for (int index = 0; index < expectedTimes.Length; index++)
+        {
+            Assert.Equal(
+                expectedTimes[index],
+                states[index].Time,
+                precision: 12);
+        }
     }
 
     [Fact]
     public void Generate_WhenConfigurationIsValid_ReturnsRequestedSampleCount()
     {
-        BlowupSeriesGenerator generator = CreateGenerator();
+        BlowupSeriesGenerator generator =
+            CreateGenerator();
 
         IReadOnlyList<BlowupState> states =
             generator.Generate(
@@ -43,7 +103,8 @@ public sealed class BlowupSeriesGeneratorTests
     [Fact]
     public void Generate_WhenConfigurationIsValid_IncludesBothEndpoints()
     {
-        BlowupSeriesGenerator generator = CreateGenerator();
+        BlowupSeriesGenerator generator =
+            CreateGenerator();
 
         IReadOnlyList<BlowupState> states =
             generator.Generate(
@@ -62,7 +123,8 @@ public sealed class BlowupSeriesGeneratorTests
     [Fact]
     public void Generate_WhenConfigurationIsValid_UsesUniformTimeSpacing()
     {
-        BlowupSeriesGenerator generator = CreateGenerator();
+        BlowupSeriesGenerator generator =
+            CreateGenerator();
 
         IReadOnlyList<BlowupState> states =
             generator.Generate(
@@ -95,7 +157,8 @@ public sealed class BlowupSeriesGeneratorTests
     public void Generate_WhenEndTimeReachesOrExceedsSingularTime_ThrowsException(
         double endTime)
     {
-        BlowupSeriesGenerator generator = CreateGenerator();
+        BlowupSeriesGenerator generator =
+            CreateGenerator();
 
         TimeSeriesParameters seriesParameters = new(
             startTime: 0.0,
@@ -116,7 +179,8 @@ public sealed class BlowupSeriesGeneratorTests
     [Fact]
     public void Generate_WhenBlowupParametersAreNull_ThrowsException()
     {
-        BlowupSeriesGenerator generator = CreateGenerator();
+        BlowupSeriesGenerator generator =
+            CreateGenerator();
 
         ArgumentNullException exception =
             Assert.Throws<ArgumentNullException>(
@@ -132,7 +196,8 @@ public sealed class BlowupSeriesGeneratorTests
     [Fact]
     public void Generate_WhenSeriesParametersAreNull_ThrowsException()
     {
-        BlowupSeriesGenerator generator = CreateGenerator();
+        BlowupSeriesGenerator generator =
+            CreateGenerator();
 
         ArgumentNullException exception =
             Assert.Throws<ArgumentNullException>(
@@ -149,6 +214,30 @@ public sealed class BlowupSeriesGeneratorTests
     {
         BlowupScalingCalculator calculator = new();
 
-        return new BlowupSeriesGenerator(calculator);
+        ITimeSamplingStrategy samplingStrategy =
+            new UniformTimeSamplingStrategy();
+
+        return new BlowupSeriesGenerator(
+            calculator,
+            samplingStrategy);
+    }
+
+    private sealed class StubTimeSamplingStrategy
+        : ITimeSamplingStrategy
+    {
+        private readonly IReadOnlyList<double> _times;
+
+        public StubTimeSamplingStrategy(
+            IReadOnlyList<double> times)
+        {
+            _times = times;
+        }
+
+        public IReadOnlyList<double> GenerateTimes(
+            BlowupParameters blowupParameters,
+            TimeSeriesParameters seriesParameters)
+        {
+            return _times;
+        }
     }
 }

@@ -1,4 +1,5 @@
 using SingularFlow.Domain.Models;
+using SingularFlow.Domain.Sampling;
 
 namespace SingularFlow.Domain.Calculations;
 
@@ -6,41 +7,39 @@ public sealed class BlowupSeriesGenerator
 {
     private readonly BlowupScalingCalculator _calculator;
 
+    private readonly ITimeSamplingStrategy _samplingStrategy;
+
     public BlowupSeriesGenerator(
-        BlowupScalingCalculator calculator)
+        BlowupScalingCalculator calculator,
+        ITimeSamplingStrategy samplingStrategy)
     {
         ArgumentNullException.ThrowIfNull(calculator);
+        ArgumentNullException.ThrowIfNull(samplingStrategy);
 
         _calculator = calculator;
+        _samplingStrategy = samplingStrategy;
     }
 
     public IReadOnlyList<BlowupState> Generate(
         BlowupParameters blowupParameters,
         TimeSeriesParameters seriesParameters)
     {
-        ArgumentNullException.ThrowIfNull(blowupParameters);
-        ArgumentNullException.ThrowIfNull(seriesParameters);
+        ArgumentNullException.ThrowIfNull(
+            blowupParameters);
 
-        ValidateSeriesRange(
-            blowupParameters,
+        ArgumentNullException.ThrowIfNull(
             seriesParameters);
 
-        double timeStep =
-            CalculateTimeStep(seriesParameters);
-
-        List<BlowupState> states = new(
-            capacity: seriesParameters.SampleCount);
-
-        for (
-            int index = 0;
-            index < seriesParameters.SampleCount;
-            index++)
-        {
-            double time = CalculateSampleTime(
-                index,
-                timeStep,
+        IReadOnlyList<double> times =
+            _samplingStrategy.GenerateTimes(
+                blowupParameters,
                 seriesParameters);
 
+        List<BlowupState> states = new(
+            capacity: times.Count);
+
+        foreach (double time in times)
+        {
             BlowupState state = _calculator.Calculate(
                 time,
                 blowupParameters);
@@ -49,45 +48,5 @@ public sealed class BlowupSeriesGenerator
         }
 
         return states.AsReadOnly();
-    }
-
-    private static void ValidateSeriesRange(
-        BlowupParameters blowupParameters,
-        TimeSeriesParameters seriesParameters)
-    {
-        if (seriesParameters.EndTime >=
-            blowupParameters.SingularTime)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(seriesParameters),
-                "Series end time must be less than " +
-                "the singular time.");
-        }
-    }
-
-    private static double CalculateTimeStep(
-        TimeSeriesParameters seriesParameters)
-    {
-        return
-            (seriesParameters.EndTime -
-             seriesParameters.StartTime) /
-            (seriesParameters.SampleCount - 1);
-    }
-
-    private static double CalculateSampleTime(
-        int index,
-        double timeStep,
-        TimeSeriesParameters seriesParameters)
-    {
-        bool isLastSample =
-            index == seriesParameters.SampleCount - 1;
-
-        if (isLastSample)
-        {
-            return seriesParameters.EndTime;
-        }
-
-        return seriesParameters.StartTime +
-               (index * timeStep);
     }
 }
