@@ -10,9 +10,11 @@ The project is inspired by the finite-time blow-up construction for the three-di
 
 SingularFlow is currently under active development.
 
-The current version calculates individual vortex-core scaling states and generates uniformly sampled time series as time approaches a configurable singular time.
+The current version calculates individual vortex-core scaling states and generates time series using interchangeable uniform and logarithmic sampling strategies.
 
-The project is being developed incrementally, with automated tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
+The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
+
+The project is being developed incrementally with automated tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
 ## Current functionality
 
@@ -24,13 +26,15 @@ The project is being developed incrementally, with automated tests, continuous i
 * Validate singular time and concentration exponent values.
 * Validate time-series start time, end time, and sample count.
 * Reject non-finite, negative, incompatible, and out-of-range values.
-* Generate uniformly spaced sequences of simulation states.
+* Generate uniformly spaced time samples.
+* Generate logarithmically spaced remaining-time samples.
+* Select sampling behavior through the Strategy design pattern.
 * Guarantee that generated sequences include both configured endpoints.
 * Prevent a generated series from reaching or exceeding the singular time.
-* Return generated states through a read-only collection.
+* Return generated times and states through read-only collections.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain behavior with 26 automated test cases.
+* Verify domain behavior with 42 automated test cases.
 * Validate every pull request and push to `main` with GitHub Actions.
 
 ## Mathematical model
@@ -79,7 +83,7 @@ As `t` approaches `T`:
 
 This represents the mathematical idea that an unbounded velocity scale can be concentrated inside a sufficiently small region without requiring unbounded total energy.
 
-## Uniform time-series sampling
+## Time-series configuration
 
 A time series is configured with:
 
@@ -89,13 +93,39 @@ t₁ = end time
 N  = sample count
 ```
 
-The sampling interval is calculated as:
+The configuration rules require:
+
+```text
+0 ≤ t₀ < t₁ < T
+2 ≤ N ≤ 100,000
+```
+
+The lower sample-count limit guarantees that a sequence has a beginning and an end.
+
+The upper limit reduces the risk of accidentally requesting an excessive in-memory allocation.
+
+## Sampling strategies
+
+SingularFlow separates time generation from state calculation through `ITimeSamplingStrategy`.
+
+The current implementations are:
+
+* `UniformTimeSamplingStrategy`
+* `LogarithmicTimeSamplingStrategy`
+
+Both strategies receive the same mathematical and time-series configuration and return a read-only collection of sample times.
+
+### Uniform sampling
+
+The uniform strategy distributes absolute times with a constant interval.
+
+The time step is:
 
 ```text
 Δt = (t₁ - t₀) / (N - 1)
 ```
 
-Each sample time is generated with:
+Each time is generated with:
 
 ```text
 tᵢ = t₀ + iΔt
@@ -105,13 +135,6 @@ where:
 
 ```text
 i = 0, 1, 2, ..., N - 1
-```
-
-The current sampling rules require:
-
-```text
-0 ≤ t₀ < t₁ < T
-2 ≤ N ≤ 100,000
 ```
 
 For example:
@@ -132,9 +155,75 @@ produces:
 0.8
 ```
 
-The final sample is explicitly assigned the configured end time to avoid accumulated floating-point rounding differences.
+Uniform sampling is useful when approximately equal resolution is desired throughout the complete time range.
 
-The current generator uses uniform sampling. Future versions may introduce logarithmic or adaptive sampling strategies to provide greater resolution near the singular time.
+### Logarithmic remaining-time sampling
+
+The logarithmic strategy distributes the remaining time:
+
+```text
+τ = T - t
+```
+
+Let:
+
+```text
+τ₀ = T - t₀
+τ₁ = T - t₁
+```
+
+The geometric ratio is:
+
+```text
+r = (τ₁ / τ₀)^(1 / (N - 1))
+```
+
+Each remaining time is:
+
+```text
+τᵢ = τ₀ × r^i
+```
+
+Each absolute sample time is then recovered with:
+
+```text
+tᵢ = T - τᵢ
+```
+
+For:
+
+```text
+Singular time: 1.0
+Start time:    0.0
+End time:      0.9999
+Sample count:  6
+```
+
+the remaining times are approximately:
+
+```text
+1.000000000000000
+0.158489319246111
+0.025118864315096
+0.003981071705535
+0.000630957344480
+0.000100000000000
+```
+
+The resulting absolute times are approximately:
+
+```text
+0.000000
+0.841511
+0.974881
+0.996019
+0.999369
+0.999900
+```
+
+This strategy provides increasingly fine resolution near the singular time, where the modeled scales change most rapidly.
+
+Both strategies explicitly assign the configured first and last samples to reduce floating-point endpoint differences.
 
 ## Mathematical scope and disclaimer
 
@@ -160,16 +249,17 @@ SingularFlow — Blow-up scaling model
 
 Singular time: 1.0000
 Concentration exponent: 0.0050
-Sampling interval: [0.0000, 0.9999]
+Sampling strategy: Logarithmic remaining time
+Sampling range: [0.0000, 0.9999]
 Sample count: 6
 
       Time      Remaining         Radius          Axial     Angular velocity      Core energy
 ------------------------------------------------------------------------------------------------
     0.0000    1.0000E+000    1.0000E+000    1.0000E+000          1.0000E+000      1.0000E+000
-    0.2000    8.0002E-001    8.9444E-001    8.9544E-001          1.1193E+000      8.9744E-001
-    0.4000    6.0004E-001    7.7462E-001    7.7660E-001          1.2943E+000      7.8058E-001
-    0.5999    4.0006E-001    6.3250E-001    6.3541E-001          1.5883E+000      6.4125E-001
-    0.7999    2.0008E-001    4.4730E-001    4.5092E-001          2.2537E+000      4.5823E-001
+    0.8415    1.5849E-001    3.9811E-001    4.0179E-001          2.5351E+000      4.0926E-001
+    0.9749    2.5119E-002    1.5849E-001    1.6144E-001          6.4269E+000      1.6749E-001
+    0.9960    3.9811E-003    6.3096E-002    6.4863E-002          1.6293E+001      6.8549E-002
+    0.9994    6.3096E-004    2.5119E-002    2.6062E-002          4.1305E+001      2.8054E-002
     0.9999    1.0000E-004    1.0000E-002    1.0471E-002          1.0471E+002      1.1482E-002
 ```
 
@@ -217,13 +307,20 @@ singular-flow/
 │       │   ├── BlowupParameters.cs
 │       │   ├── BlowupState.cs
 │       │   └── TimeSeriesParameters.cs
+│       ├── Sampling/
+│       │   ├── ITimeSamplingStrategy.cs
+│       │   ├── LogarithmicTimeSamplingStrategy.cs
+│       │   ├── TimeSamplingValidation.cs
+│       │   └── UniformTimeSamplingStrategy.cs
 │       └── SingularFlow.Domain.csproj
 ├── tests/
 │   └── SingularFlow.Domain.Tests/
 │       ├── BlowupParametersTests.cs
 │       ├── BlowupScalingCalculatorTests.cs
 │       ├── BlowupSeriesGeneratorTests.cs
+│       ├── LogarithmicTimeSamplingStrategyTests.cs
 │       ├── TimeSeriesParametersTests.cs
+│       ├── UniformTimeSamplingStrategyTests.cs
 │       └── SingularFlow.Domain.Tests.csproj
 ├── .editorconfig
 ├── .gitignore
@@ -238,14 +335,15 @@ The solution currently contains three projects.
 
 ### SingularFlow.Domain
 
-Contains the mathematical behavior, domain models, validation rules, and time-series generation.
+Contains the mathematical behavior, domain models, validation rules, sampling strategies, and time-series generation.
 
 Responsibilities include:
 
 * Mathematical parameter validation.
 * Time-series parameter validation.
 * Individual scaling calculations.
-* Uniform time-series generation.
+* Uniform time sampling.
+* Logarithmic remaining-time sampling.
 * Cross-configuration validation.
 * Mathematical result models.
 * Domain rules independent of presentation and infrastructure.
@@ -259,11 +357,14 @@ Provides the current command-line interface and acts as the composition point fo
 Responsibilities include:
 
 * Creating the mathematical configuration.
-* Creating the sampling configuration.
+* Creating the time-series configuration.
+* Selecting a sampling strategy.
 * Constructing the domain calculator and series generator.
 * Executing the series-generation operation.
 * Formatting calculated results.
 * Displaying the active configuration and output.
+
+The CLI currently selects `LogarithmicTimeSamplingStrategy`.
 
 The CLI depends on `SingularFlow.Domain`.
 
@@ -280,9 +381,12 @@ The current tests verify:
 * Rejection of the singular time as a calculation point.
 * Valid and invalid time-series configuration.
 * Minimum and maximum sample-count rules.
+* Required generator dependencies.
+* Delegation from the generator to a sampling strategy.
 * Requested output count.
 * Inclusion of both sampling endpoints.
-* Uniform spacing between generated times.
+* Uniform spacing between absolute times.
+* Geometric spacing between remaining times.
 * Rejection of series that reach or exceed the singular time.
 * Rejection of required null dependencies and arguments.
 
@@ -297,13 +401,26 @@ SingularFlow.Domain.Tests ─> SingularFlow.Domain
 
 `SingularFlow.Domain` does not depend on the CLI or the tests.
 
-Within the domain, the current execution flow is:
+Within the domain, the execution flow is:
 
 ```text
-TimeSeriesParameters ─┐
-                      ├─> BlowupSeriesGenerator ─> BlowupScalingCalculator
-BlowupParameters ─────┘                                  │
-                                                        └─> BlowupState
+BlowupParameters ────┐
+                     ├──> ITimeSamplingStrategy
+TimeSeriesParameters ┘            │
+                                  ├──> UniformTimeSamplingStrategy
+                                  └──> LogarithmicTimeSamplingStrategy
+                                                │
+                                                ▼
+                                          Sample times
+                                                │
+                                                ▼
+                                     BlowupSeriesGenerator
+                                                │
+                                                ▼
+                                   BlowupScalingCalculator
+                                                │
+                                                ▼
+                                          BlowupState
 ```
 
 ## Design decisions
@@ -320,27 +437,46 @@ Their constructors validate all local invariants before assigning their properti
 
 It does not decide how many states should be generated or how sample times should be distributed.
 
+### Strategy pattern
+
+`ITimeSamplingStrategy` defines the contract for generating sample times.
+
+The uniform and logarithmic strategies implement this contract independently. Additional strategies can be introduced without placing conditional sampling logic inside `BlowupSeriesGenerator`.
+
+### Shared sampling validation
+
+`TimeSamplingValidation` centralizes the rules shared by all current sampling strategies.
+
+It is `internal` because it is an implementation detail of the domain and is not intended to be called by the CLI or future external consumers.
+
 ### Series generation
 
 `BlowupSeriesGenerator` is responsible for:
 
-* Validating compatibility between mathematical and sampling configurations.
-* Calculating the uniform time step.
-* Generating sample times in chronological order.
-* Delegating each mathematical calculation to `BlowupScalingCalculator`.
+* Receiving a sampling strategy.
+* Requesting sample times from that strategy.
+* Delegating every mathematical calculation to `BlowupScalingCalculator`.
 * Returning the resulting states through a read-only collection.
+
+The generator does not contain uniform or logarithmic sampling formulas.
 
 ### Constructor injection
 
-`BlowupSeriesGenerator` receives `BlowupScalingCalculator` through its constructor.
+`BlowupSeriesGenerator` receives both `BlowupScalingCalculator` and `ITimeSamplingStrategy` through its constructor.
 
-This makes the dependency explicit and keeps object creation in the application entry point.
+This makes its dependencies explicit and allows the application entry point to select the desired sampling behavior.
 
 ### Bounded sample count
 
 The time-series configuration accepts between 2 and 100,000 samples.
 
 The lower limit guarantees that the series has a start and an end. The upper limit reduces the risk of accidental excessive in-memory allocation.
+
+### Floating-point endpoint protection
+
+Both sampling strategies explicitly return `StartTime` and `EndTime` for the first and last positions.
+
+This avoids exposing small accumulated floating-point differences at the configured boundaries.
 
 ## Requirements
 
@@ -477,10 +613,10 @@ git switch -c feat/example-feature
 Commit messages follow the Conventional Commits style:
 
 ```text
-feat(domain): add simulation series generation
-test(domain): cover invalid sampling ranges
-docs: document simulation workflow
-fix(cli): correct displayed sampling values
+feat(domain): add logarithmic sampling strategy
+test(domain): cover sampling edge cases
+docs: document sampling strategies
+fix(cli): correct displayed sampling information
 ci: update continuous integration workflow
 ```
 
@@ -504,11 +640,12 @@ The project is developed incrementally.
 * [x] Expand mathematical input validation.
 * [x] Introduce validated time-series parameters.
 * [x] Generate uniformly sampled simulation states.
-* [x] Protect generated results through a read-only collection.
+* [x] Protect generated results through read-only collections.
+* [x] Introduce interchangeable sampling strategies.
+* [x] Add logarithmic sampling near the singular time.
 * [x] Expand automated test coverage.
-* [ ] Introduce alternative sampling strategies.
-* [ ] Add logarithmic sampling near the singular time.
 * [ ] Add additional mathematical invariants when required.
+* [ ] Introduce adaptive sampling if justified by a concrete use case.
 
 ### Phase 3 — Application layer
 
@@ -565,6 +702,7 @@ SingularFlow follows these principles:
 
 * Build features incrementally.
 * Keep the domain independent of infrastructure.
+* Depend on abstractions when multiple behaviors are required.
 * Write automated tests for meaningful behavior.
 * Maintain zero build errors and warnings.
 * Avoid unnecessary architectural complexity.

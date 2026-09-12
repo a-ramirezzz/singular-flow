@@ -1,10 +1,18 @@
 ﻿using SingularFlow.Domain.Calculations;
 using SingularFlow.Domain.Models;
+using SingularFlow.Domain.Sampling;
+
+const string samplingStrategyName =
+    "Logarithmic remaining time";
 
 BlowupScalingCalculator calculator = new();
 
+ITimeSamplingStrategy samplingStrategy =
+    new LogarithmicTimeSamplingStrategy();
+
 BlowupSeriesGenerator seriesGenerator = new(
-    calculator);
+    calculator,
+    samplingStrategy);
 
 BlowupParameters blowupParameters =
     BlowupParameters.Default;
@@ -33,7 +41,11 @@ Console.WriteLine(
     $"{blowupParameters.ConcentrationExponent:F4}");
 
 Console.WriteLine(
-    $"Sampling interval: " +
+    $"Sampling strategy: " +
+    $"{samplingStrategyName}");
+
+Console.WriteLine(
+    $"Sampling range: " +
     $"[{seriesParameters.StartTime:F4}, " +
     $"{seriesParameters.EndTime:F4}]");
 
