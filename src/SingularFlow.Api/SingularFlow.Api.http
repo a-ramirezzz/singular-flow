@@ -1,0 +1,6 @@
+@SingularFlow.Api_HostAddress = http://localhost:5278
+
+GET {{SingularFlow.Api_HostAddress}}/health
+Accept: text/plain
+
+###

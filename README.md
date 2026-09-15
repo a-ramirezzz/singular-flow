@@ -14,9 +14,11 @@ The current version calculates individual vortex-core scaling states and generat
 
 Application orchestration is separated from the mathematical domain through a dedicated use case. The command-line interface creates a simulation request, delegates execution to the application layer, and displays the structured result.
 
+An ASP.NET Core Web API foundation is now available. It currently exposes an operational health-check endpoint and generates an OpenAPI document in the Development environment.
+
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-The project is being developed incrementally with automated tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
+The project is being developed incrementally with unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
 ## Current functionality
 
@@ -41,8 +43,12 @@ The project is being developed incrementally with automated tests, continuous in
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain and application behavior with 47 automated test cases.
+* Verify domain, application, and API behavior with 49 automated test cases.
 * Validate every pull request and push to `main` with GitHub Actions.
+* Host an ASP.NET Core Web API.
+* Expose an operational health-check endpoint.
+* Generate an OpenAPI 3.1.1 document in Development.
+* Test the real ASP.NET Core HTTP pipeline in memory.
 
 ## Mathematical model
 
@@ -274,6 +280,10 @@ Sample count: 6
 
 * C#
 * .NET 10
+* ASP.NET Core Web API
+* ASP.NET Core Health Checks
+* Microsoft.AspNetCore.OpenApi
+* Microsoft.AspNetCore.Mvc.Testing
 * xUnit
 * Git
 * GitHub
@@ -283,7 +293,6 @@ Sample count: 6
 
 Future versions are expected to introduce:
 
-* ASP.NET Core Web API
 * Entity Framework Core
 * PostgreSQL
 * Background services
@@ -291,7 +300,6 @@ Future versions are expected to introduce:
 * Blazor
 * Interactive data visualization
 * Docker
-* Automated integration tests
 
 Planned technologies will only be added when the project has a concrete requirement for them.
 
@@ -303,6 +311,14 @@ singular-flow/
 │   └── workflows/
 │       └── ci.yml
 ├── src/
+│   ├── SingularFlow.Api/
+│   │   ├── Properties/
+│   │   │   └── launchSettings.json
+│   │   ├── Program.cs
+│   │   ├── SingularFlow.Api.csproj
+│   │   ├── SingularFlow.Api.http
+│   │   ├── appsettings.Development.json
+│   │   └── appsettings.json
 │   ├── SingularFlow.Application/
 │   │   ├── Simulations/
 │   │   │   ├── RunSimulationHandler.cs
@@ -328,6 +344,12 @@ singular-flow/
 │       │   └── UniformTimeSamplingStrategy.cs
 │       └── SingularFlow.Domain.csproj
 ├── tests/
+│   ├── SingularFlow.Api.Tests/
+│   │   ├── Health/
+│   │   │   └── HealthEndpointTests.cs
+│   │   ├── OpenApi/
+│   │   │   └── OpenApiEndpointTests.cs
+│   │   └── SingularFlow.Api.Tests.csproj
 │   ├── SingularFlow.Application.Tests/
 │   │   ├── Simulations/
 │   │   │   └── RunSimulationHandlerTests.cs
@@ -349,7 +371,7 @@ singular-flow/
 
 ## Architecture
 
-The solution currently contains five projects separated into production code and automated test projects.
+The solution currently contains seven projects separated into production code and automated test projects.
 
 ### SingularFlow.Domain
 
@@ -367,6 +389,25 @@ Responsibilities include:
 * Domain rules independent of presentation and application orchestration.
 
 The domain project does not depend on the application layer, command-line interface, or test projects.
+
+### SingularFlow.Api
+
+Hosts the ASP.NET Core HTTP application.
+
+Current responsibilities include:
+
+* Starting and configuring the web application.
+* Registering MVC controller support for upcoming REST endpoints.
+* Registering OpenAPI generation.
+* Registering ASP.NET Core health-check services.
+* Exposing `GET /health`.
+* Generating an OpenAPI document in Development.
+* Applying HTTPS redirection.
+* Providing local HTTP and HTTPS launch profiles.
+
+The API depends directly on `SingularFlow.Application`.
+
+It does not contain mathematical formulas or domain validation rules.
 
 ### SingularFlow.Application
 
@@ -444,30 +485,53 @@ The current application tests verify:
 
 The test project depends directly on `SingularFlow.Application`.
 
+### SingularFlow.Api.Tests
+
+Contains in-memory integration tests for the ASP.NET Core host.
+
+The current API tests verify:
+
+* Successful application startup.
+* `GET /health` returns `200 OK`.
+* The health response contains `Healthy`.
+* The OpenAPI endpoint returns JSON.
+* The generated document uses OpenAPI 3.1.1.
+* The generated document contains the expected API title.
+* The generated document exposes a valid `paths` object.
+
+The tests use `WebApplicationFactory<Program>` to execute the real HTTP pipeline without opening an external network port.
+
+The test project depends directly on `SingularFlow.Api`.
+
 ## Dependency direction
 
-The direct project dependencies are:
+The direct production project dependencies are:
 
 ```text
-SingularFlow.Cli ───────────────────> SingularFlow.Application
-                                               │
-                                               ▼
-                                  SingularFlow.Domain
+SingularFlow.Api ──────┐
+                       ├──> SingularFlow.Application
+SingularFlow.Cli ──────┘                │
+                                        ▼
+                             SingularFlow.Domain
+```
 
-SingularFlow.Application.Tests ────> SingularFlow.Application
-SingularFlow.Domain.Tests ─────────> SingularFlow.Domain
+The direct test project dependencies are:
+
+```text
+SingularFlow.Api.Tests ─────────> SingularFlow.Api
+SingularFlow.Application.Tests ─> SingularFlow.Application
+SingularFlow.Domain.Tests ──────> SingularFlow.Domain
 ```
 
 The dependency rules are:
 
 * `SingularFlow.Domain` has no dependency on higher-level projects.
-* `SingularFlow.Application` depends on the domain.
-* `SingularFlow.Cli` depends on the application layer.
+* `SingularFlow.Application` depends on `SingularFlow.Domain`.
+* `SingularFlow.Api` and `SingularFlow.Cli` depend on `SingularFlow.Application`.
 * Production projects do not depend on test projects.
-* Presentation behavior does not enter the domain.
-* Mathematical rules do not depend on the presentation mechanism.
+* Mathematical behavior is independent of HTTP and command-line presentation.
 
-The complete execution flow is:
+The complete simulation execution flow is:
 
 ```text
 Program.cs
@@ -589,6 +653,30 @@ Both sampling strategies explicitly return `StartTime` and `EndTime` for the fir
 
 This avoids exposing small accumulated floating-point differences at the configured boundaries.
 
+### Web API foundation
+
+`SingularFlow.Api` uses the ASP.NET Core Web SDK and acts as an additional presentation layer.
+
+The API currently provides infrastructure endpoints only. Simulation execution over HTTP will be introduced separately so the API foundation and simulation contract can be reviewed independently.
+
+### Operational health check
+
+The `/health` endpoint uses the built-in ASP.NET Core health-check infrastructure.
+
+It returns `200 OK` with `Healthy` while all registered checks report a healthy status.
+
+### Development OpenAPI document
+
+OpenAPI generation is enabled only in the Development environment and currently produces an OpenAPI 3.1.1 document.
+
+The current document has no public simulation operations because those endpoints have not been introduced yet. The infrastructure health endpoint is intentionally not included as a controller operation.
+
+### In-memory API testing
+
+`SingularFlow.Api.Tests` uses `WebApplicationFactory<Program>`.
+
+This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server.
+
 ## Requirements
 
 Install the following software before building the project:
@@ -658,6 +746,35 @@ dotnet run \
   --no-build
 ```
 
+Run the Web API:
+
+```bash
+dotnet run \
+  --project src/SingularFlow.Api/SingularFlow.Api.csproj
+```
+
+The local development launch profiles use HTTP on port `5278` and HTTPS on port `7020`. These defaults are configured in `launchSettings.json`.
+
+Request the operational health endpoint over HTTP:
+
+```bash
+curl \
+  --include \
+  http://localhost:5278/health
+```
+
+The expected response body is:
+
+```text
+Healthy
+```
+
+The Development OpenAPI document is available at:
+
+```text
+http://localhost:5278/openapi/v1.json
+```
+
 ## Test
 
 Run all automated tests:
@@ -681,7 +798,11 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 47 automated tests distributed across the domain and application test projects.
+The solution currently contains 49 automated tests distributed across:
+
+* 42 Domain unit tests.
+* 5 Application unit tests.
+* 2 API integration tests.
 
 ## Code formatting
 
@@ -787,11 +908,14 @@ The project is developed incrementally.
 
 ### Phase 4 — Web API
 
-* [ ] Create an ASP.NET Core Web API.
-* [ ] Add REST endpoints.
-* [ ] Add request validation.
-* [ ] Generate OpenAPI documentation.
-* [ ] Add integration tests.
+* [x] Create an ASP.NET Core Web API.
+* [x] Add an operational health-check endpoint.
+* [x] Generate an OpenAPI document in Development.
+* [x] Add API integration-test infrastructure.
+* [ ] Add simulation REST endpoints.
+* [ ] Add HTTP request validation.
+* [ ] Document simulation operations through OpenAPI.
+* [ ] Expand integration tests for simulation execution.
 
 ### Phase 5 — Persistence
 
