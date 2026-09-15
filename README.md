@@ -12,6 +12,8 @@ SingularFlow is currently under active development.
 
 The current version calculates individual vortex-core scaling states and generates time series using interchangeable uniform and logarithmic sampling strategies.
 
+Application orchestration is separated from the mathematical domain through a dedicated use case. The command-line interface creates a simulation request, delegates execution to the application layer, and displays the structured result.
+
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
 The project is being developed incrementally with automated tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
@@ -32,9 +34,14 @@ The project is being developed incrementally with automated tests, continuous in
 * Guarantee that generated sequences include both configured endpoints.
 * Prevent a generated series from reaching or exceeding the singular time.
 * Return generated times and states through read-only collections.
+* Represent simulation input through a structured application request.
+* Execute simulations through a dedicated application use case.
+* Select the requested sampling mode inside the application layer.
+* Return simulation configuration and generated states through a structured result.
+* Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain behavior with 42 automated test cases.
+* Verify domain and application behavior with 47 automated test cases.
 * Validate every pull request and push to `main` with GitHub Actions.
 
 ## Mathematical model
@@ -296,6 +303,13 @@ singular-flow/
 │   └── workflows/
 │       └── ci.yml
 ├── src/
+│   ├── SingularFlow.Application/
+│   │   ├── Simulations/
+│   │   │   ├── RunSimulationHandler.cs
+│   │   │   ├── RunSimulationRequest.cs
+│   │   │   ├── RunSimulationResult.cs
+│   │   │   └── SamplingMode.cs
+│   │   └── SingularFlow.Application.csproj
 │   ├── SingularFlow.Cli/
 │   │   ├── Program.cs
 │   │   └── SingularFlow.Cli.csproj
@@ -314,6 +328,10 @@ singular-flow/
 │       │   └── UniformTimeSamplingStrategy.cs
 │       └── SingularFlow.Domain.csproj
 ├── tests/
+│   ├── SingularFlow.Application.Tests/
+│   │   ├── Simulations/
+│   │   │   └── RunSimulationHandlerTests.cs
+│   │   └── SingularFlow.Application.Tests.csproj
 │   └── SingularFlow.Domain.Tests/
 │       ├── BlowupParametersTests.cs
 │       ├── BlowupScalingCalculatorTests.cs
@@ -331,7 +349,7 @@ singular-flow/
 
 ## Architecture
 
-The solution currently contains three projects.
+The solution currently contains five projects separated into production code and automated test projects.
 
 ### SingularFlow.Domain
 
@@ -346,33 +364,50 @@ Responsibilities include:
 * Logarithmic remaining-time sampling.
 * Cross-configuration validation.
 * Mathematical result models.
-* Domain rules independent of presentation and infrastructure.
+* Domain rules independent of presentation and application orchestration.
 
-The domain project does not depend on the command-line interface or the test project.
+The domain project does not depend on the application layer, command-line interface, or test projects.
 
-### SingularFlow.Cli
+### SingularFlow.Application
 
-Provides the current command-line interface and acts as the composition point for the application.
+Contains the application use cases that coordinate domain behavior.
 
 Responsibilities include:
 
-* Creating the mathematical configuration.
-* Creating the time-series configuration.
-* Selecting a sampling strategy.
-* Constructing the domain calculator and series generator.
-* Executing the series-generation operation.
-* Formatting calculated results.
+* Receiving structured simulation requests.
+* Selecting the requested sampling strategy.
+* Creating validated domain configurations.
+* Coordinating the scaling calculator and series generator.
+* Executing a complete simulation use case.
+* Returning structured simulation results.
+* Preventing presentation concerns from entering the domain layer.
+
+The application project depends on `SingularFlow.Domain`.
+
+It does not depend on the command-line interface or test projects.
+
+### SingularFlow.Cli
+
+Provides the current command-line presentation and composition entry point.
+
+Responsibilities include:
+
+* Creating a `RunSimulationRequest`.
+* Invoking `RunSimulationHandler`.
+* Receiving a `RunSimulationResult`.
+* Translating the sampling mode into a user-facing description.
+* Formatting calculated states.
 * Displaying the active configuration and output.
 
-The CLI currently selects `LogarithmicTimeSamplingStrategy`.
+The CLI currently requests logarithmic remaining-time sampling.
 
-The CLI depends on `SingularFlow.Domain`.
+The CLI depends directly on `SingularFlow.Application`. It no longer constructs domain calculators, generators, or sampling strategies directly.
 
 ### SingularFlow.Domain.Tests
 
 Contains automated tests for domain behavior.
 
-The current tests verify:
+The current domain tests verify:
 
 * Valid and invalid singular-time configuration.
 * Valid and invalid concentration-exponent configuration.
@@ -390,37 +425,80 @@ The current tests verify:
 * Rejection of series that reach or exceed the singular time.
 * Rejection of required null dependencies and arguments.
 
-The test project depends on `SingularFlow.Domain`.
+The test project depends directly on `SingularFlow.Domain`.
+
+### SingularFlow.Application.Tests
+
+Contains automated tests for application use-case behavior.
+
+The current application tests verify:
+
+* Rejection of a null simulation request.
+* Execution with uniform sampling.
+* Execution with logarithmic remaining-time sampling.
+* Preservation of validated mathematical configuration.
+* Preservation of validated time-series configuration.
+* Preservation of the selected sampling mode.
+* Rejection of unsupported sampling modes.
+* Production of structured simulation results.
+
+The test project depends directly on `SingularFlow.Application`.
 
 ## Dependency direction
 
+The direct project dependencies are:
+
 ```text
-SingularFlow.Cli ──────────> SingularFlow.Domain
-SingularFlow.Domain.Tests ─> SingularFlow.Domain
+SingularFlow.Cli ───────────────────> SingularFlow.Application
+                                               │
+                                               ▼
+                                  SingularFlow.Domain
+
+SingularFlow.Application.Tests ────> SingularFlow.Application
+SingularFlow.Domain.Tests ─────────> SingularFlow.Domain
 ```
 
-`SingularFlow.Domain` does not depend on the CLI or the tests.
+The dependency rules are:
 
-Within the domain, the execution flow is:
+* `SingularFlow.Domain` has no dependency on higher-level projects.
+* `SingularFlow.Application` depends on the domain.
+* `SingularFlow.Cli` depends on the application layer.
+* Production projects do not depend on test projects.
+* Presentation behavior does not enter the domain.
+* Mathematical rules do not depend on the presentation mechanism.
+
+The complete execution flow is:
 
 ```text
-BlowupParameters ────┐
-                     ├──> ITimeSamplingStrategy
-TimeSeriesParameters ┘            │
-                                  ├──> UniformTimeSamplingStrategy
-                                  └──> LogarithmicTimeSamplingStrategy
-                                                │
-                                                ▼
-                                          Sample times
-                                                │
-                                                ▼
-                                     BlowupSeriesGenerator
-                                                │
-                                                ▼
-                                   BlowupScalingCalculator
-                                                │
-                                                ▼
-                                          BlowupState
+Program.cs
+    │
+    ▼
+RunSimulationRequest
+    │
+    ▼
+RunSimulationHandler
+    │
+    ├── Creates BlowupParameters
+    ├── Creates TimeSeriesParameters
+    └── Selects ITimeSamplingStrategy
+                  │
+                  ├── UniformTimeSamplingStrategy
+                  └── LogarithmicTimeSamplingStrategy
+                              │
+                              ▼
+                   BlowupSeriesGenerator
+                              │
+                              ▼
+                  BlowupScalingCalculator
+                              │
+                              ▼
+                  IReadOnlyList<BlowupState>
+                              │
+                              ▼
+                  RunSimulationResult
+                              │
+                              ▼
+                     CLI presentation
 ```
 
 ## Design decisions
@@ -447,7 +525,7 @@ The uniform and logarithmic strategies implement this contract independently. Ad
 
 `TimeSamplingValidation` centralizes the rules shared by all current sampling strategies.
 
-It is `internal` because it is an implementation detail of the domain and is not intended to be called by the CLI or future external consumers.
+It is `internal` because it is an implementation detail of the domain and is not intended to be called by the application layer, CLI, or future external consumers.
 
 ### Series generation
 
@@ -464,7 +542,40 @@ The generator does not contain uniform or logarithmic sampling formulas.
 
 `BlowupSeriesGenerator` receives both `BlowupScalingCalculator` and `ITimeSamplingStrategy` through its constructor.
 
-This makes its dependencies explicit and allows the application entry point to select the desired sampling behavior.
+This makes its dependencies explicit and allows the application layer to select the desired sampling behavior.
+
+### Application use case
+
+`RunSimulationHandler` represents the application use case for executing a simulation.
+
+It coordinates the domain components without duplicating mathematical formulas or validation rules.
+
+The handler:
+
+* Receives a `RunSimulationRequest`.
+* Selects a sampling strategy from `SamplingMode`.
+* Creates validated domain configuration objects.
+* Executes the domain series generator.
+* Returns a `RunSimulationResult`.
+
+### Structured request and result objects
+
+`RunSimulationRequest` defines the complete input required to execute a simulation.
+
+`RunSimulationResult` returns:
+
+* The validated blow-up parameters.
+* The validated time-series parameters.
+* The selected sampling mode.
+* The generated read-only collection of states.
+
+These application models provide a stable boundary between presentation code and the mathematical domain.
+
+### Centralized sampling selection
+
+The conversion from `SamplingMode` to a concrete `ITimeSamplingStrategy` is centralized inside `RunSimulationHandler`.
+
+The CLI does not need to know how sampling strategies are constructed. Unsupported modes are rejected explicitly instead of silently selecting a default behavior.
 
 ### Bounded sample count
 
@@ -506,15 +617,18 @@ The required SDK family is declared in `global.json`.
 From the repository root, run:
 
 ```bash
-dotnet restore
+dotnet restore SingularFlow.slnx
 ```
+
+Restore should be executed after adding projects, project references, or package dependencies.
 
 ## Build
 
 Build the complete solution:
 
 ```bash
-dotnet build SingularFlow.slnx --no-restore
+dotnet build SingularFlow.slnx \
+  --no-restore
 ```
 
 Build using the Release configuration:
@@ -525,6 +639,8 @@ dotnet build SingularFlow.slnx \
   --no-restore
 ```
 
+Do not use `--no-restore` immediately after modifying project references unless a successful restore has already been completed.
+
 ## Run
 
 Run the command-line application:
@@ -532,6 +648,14 @@ Run the command-line application:
 ```bash
 dotnet run \
   --project src/SingularFlow.Cli/SingularFlow.Cli.csproj
+```
+
+Run without rebuilding after a successful build:
+
+```bash
+dotnet run \
+  --project src/SingularFlow.Cli/SingularFlow.Cli.csproj \
+  --no-build
 ```
 
 ## Test
@@ -545,7 +669,8 @@ dotnet test SingularFlow.slnx
 Run tests without rebuilding after a successful build:
 
 ```bash
-dotnet test SingularFlow.slnx --no-build
+dotnet test SingularFlow.slnx \
+  --no-build
 ```
 
 Run tests using the Release configuration:
@@ -555,6 +680,8 @@ dotnet test SingularFlow.slnx \
   --configuration Release \
   --no-build
 ```
+
+The solution currently contains 47 automated tests distributed across the domain and application test projects.
 
 ## Code formatting
 
@@ -614,8 +741,9 @@ Commit messages follow the Conventional Commits style:
 
 ```text
 feat(domain): add logarithmic sampling strategy
-test(domain): cover sampling edge cases
-docs: document sampling strategies
+feat(application): add simulation execution use case
+test(application): cover simulation handler behavior
+docs: document application architecture
 fix(cli): correct displayed sampling information
 ci: update continuous integration workflow
 ```
@@ -643,16 +771,19 @@ The project is developed incrementally.
 * [x] Protect generated results through read-only collections.
 * [x] Introduce interchangeable sampling strategies.
 * [x] Add logarithmic sampling near the singular time.
-* [x] Expand automated test coverage.
+* [x] Expand automated domain test coverage.
 * [ ] Add additional mathematical invariants when required.
 * [ ] Introduce adaptive sampling if justified by a concrete use case.
 
 ### Phase 3 — Application layer
 
-* [ ] Introduce use cases for creating and executing simulations.
-* [ ] Separate application orchestration from mathematical calculations.
-* [ ] Add cancellation support.
-* [ ] Add structured result objects.
+* [x] Introduce a use case for executing simulations.
+* [x] Separate application orchestration from mathematical calculations.
+* [x] Introduce structured simulation request and result objects.
+* [x] Move sampling-mode selection out of the CLI.
+* [x] Add automated application tests.
+* [ ] Add cancellation support when asynchronous execution is introduced.
+* [ ] Introduce additional use cases when required by the Web API.
 
 ### Phase 4 — Web API
 
@@ -702,6 +833,7 @@ SingularFlow follows these principles:
 
 * Build features incrementally.
 * Keep the domain independent of infrastructure.
+* Keep application orchestration independent of presentation.
 * Depend on abstractions when multiple behaviors are required.
 * Write automated tests for meaningful behavior.
 * Maintain zero build errors and warnings.

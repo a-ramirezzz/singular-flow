@@ -1,31 +1,31 @@
-﻿using SingularFlow.Domain.Calculations;
-using SingularFlow.Domain.Models;
-using SingularFlow.Domain.Sampling;
+﻿using SingularFlow.Application.Simulations;
 
-const string samplingStrategyName =
-    "Logarithmic remaining time";
+RunSimulationRequest request = new(
+    SingularTime: 1.0,
+    ConcentrationExponent: 0.005,
+    StartTime: 0.0,
+    EndTime: 0.9999,
+    SampleCount: 6,
+    SamplingMode: SamplingMode.Logarithmic);
 
-BlowupScalingCalculator calculator = new();
+RunSimulationHandler handler = new();
 
-ITimeSamplingStrategy samplingStrategy =
-    new LogarithmicTimeSamplingStrategy();
+RunSimulationResult result =
+    handler.Handle(request);
 
-BlowupSeriesGenerator seriesGenerator = new(
-    calculator,
-    samplingStrategy);
+string samplingStrategyName =
+    result.SamplingMode switch
+    {
+        SamplingMode.Uniform =>
+            "Uniform time",
 
-BlowupParameters blowupParameters =
-    BlowupParameters.Default;
+        SamplingMode.Logarithmic =>
+            "Logarithmic remaining time",
 
-TimeSeriesParameters seriesParameters = new(
-    startTime: 0.0,
-    endTime: 0.9999,
-    sampleCount: 6);
-
-IReadOnlyList<BlowupState> states =
-    seriesGenerator.Generate(
-        blowupParameters,
-        seriesParameters);
+        _ => throw new InvalidOperationException(
+            "The simulation returned an unsupported " +
+            "sampling mode.")
+    };
 
 Console.WriteLine(
     "SingularFlow — Blow-up scaling model");
@@ -34,11 +34,11 @@ Console.WriteLine();
 
 Console.WriteLine(
     $"Singular time: " +
-    $"{blowupParameters.SingularTime:F4}");
+    $"{result.BlowupParameters.SingularTime:F4}");
 
 Console.WriteLine(
     $"Concentration exponent: " +
-    $"{blowupParameters.ConcentrationExponent:F4}");
+    $"{result.BlowupParameters.ConcentrationExponent:F4}");
 
 Console.WriteLine(
     $"Sampling strategy: " +
@@ -46,12 +46,12 @@ Console.WriteLine(
 
 Console.WriteLine(
     $"Sampling range: " +
-    $"[{seriesParameters.StartTime:F4}, " +
-    $"{seriesParameters.EndTime:F4}]");
+    $"[{result.TimeSeriesParameters.StartTime:F4}, " +
+    $"{result.TimeSeriesParameters.EndTime:F4}]");
 
 Console.WriteLine(
     $"Sample count: " +
-    $"{seriesParameters.SampleCount}");
+    $"{result.TimeSeriesParameters.SampleCount}");
 
 Console.WriteLine();
 
@@ -65,7 +65,7 @@ Console.WriteLine(
 
 Console.WriteLine(new string('-', 96));
 
-foreach (BlowupState state in states)
+foreach (var state in result.States)
 {
     Console.WriteLine(
         $"{state.Time,10:F4} " +

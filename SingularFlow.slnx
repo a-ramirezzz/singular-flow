@@ -1,9 +1,11 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/SingularFlow.Application/SingularFlow.Application.csproj" />
     <Project Path="src/SingularFlow.Cli/SingularFlow.Cli.csproj" />
     <Project Path="src/SingularFlow.Domain/SingularFlow.Domain.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/SingularFlow.Application.Tests/SingularFlow.Application.Tests.csproj" />
     <Project Path="tests/SingularFlow.Domain.Tests/SingularFlow.Domain.Tests.csproj" />
   </Folder>
 </Solution>
