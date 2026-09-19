@@ -18,6 +18,8 @@ The ASP.NET Core Web API executes simulations over HTTP with uniform or logarith
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
+Local PostgreSQL 18.6 infrastructure is available through Docker Compose. The application is not yet connected to PostgreSQL; simulations are still calculated in memory.
+
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
 ## Current functionality
@@ -54,6 +56,9 @@ The project is being developed incrementally with Domain and Application unit te
 * Return `400 Bad Request` with `ProblemDetails` for invalid simulation parameters and `ValidationProblemDetails` for model-binding or malformed-JSON failures.
 * Document the simulation operation and its `200` and `400` responses through OpenAPI.
 * Provide reusable HTTP requests in `SingularFlow.Api.http`.
+* Start PostgreSQL locally with Docker Compose and check the database container's health.
+* Persist local database data through a named Docker volume.
+* Keep local database credentials outside version control.
 
 ## Mathematical model
 
@@ -293,18 +298,20 @@ Sample count: 6
 * Git
 * GitHub
 * GitHub Actions
+* PostgreSQL 18.6 (`postgres:18.6-alpine3.24`)
+* Docker
+* Docker Compose
 
 ## Planned technologies
 
 Future versions are expected to introduce:
 
 * Entity Framework Core
-* PostgreSQL
 * Background services
 * SignalR
 * Blazor
 * Interactive data visualization
-* Docker
+* Docker for future application containerization; currently only PostgreSQL is containerized.
 
 Planned technologies will only be added when the project has a concrete requirement for them.
 
@@ -382,15 +389,23 @@ singular-flow/
 │       ├── UniformTimeSamplingStrategyTests.cs
 │       └── SingularFlow.Domain.Tests.csproj
 ├── .editorconfig
+├── .env.example
 ├── .gitignore
+├── compose.yaml
 ├── global.json
 ├── SingularFlow.slnx
 └── README.md
 ```
 
+`compose.yaml` defines the local PostgreSQL service. `.env.example` is the configuration template; the private `.env` file is ignored and is not part of the project structure.
+
 ## Architecture
 
 The solution currently contains seven projects separated into production code and automated test projects.
+
+### Local infrastructure
+
+Docker Compose currently provisions only PostgreSQL through the root `compose.yaml` file. This file is not a .NET project, and no .NET project depends on the database yet.
 
 ### SingularFlow.Domain
 
@@ -550,6 +565,7 @@ The dependency rules are:
 * `SingularFlow.Api` and `SingularFlow.Cli` depend on `SingularFlow.Application`.
 * Production projects do not depend on test projects.
 * Mathematical behavior is independent of HTTP and command-line presentation.
+* PostgreSQL has no application dependency yet because persistence integration has not been implemented.
 
 The simulation execution flow for the CLI and HTTP API is:
 
@@ -591,6 +607,14 @@ RunSimulationHandler
 ```
 
 ## Design decisions
+
+### Local PostgreSQL infrastructure
+
+The Compose service pins `postgres:18.6-alpine3.24` instead of using `latest`; the image supports the project's ARM64 development environment. The `postgres` service uses the container name `singular-flow-postgres` and checks readiness with `pg_isready`.
+
+The default host binding is loopback-only (`POSTGRES_BIND_ADDRESS=127.0.0.1`). `POSTGRES_PORT` defaults to `5432` and can be changed when that host port is occupied. The database always listens on port `5432` inside the container.
+
+The tracked `.env.example` template is separate from the ignored local `.env` file, so local credentials stay out of version control. The named volume `singular-flow-postgres-data` preserves data across container recreation and mounts at `/var/lib/postgresql`, the PostgreSQL 18 data location.
 
 ### Immutable configuration objects
 
@@ -821,7 +845,7 @@ Install the following software before building the project:
 * .NET 10 SDK
 * Git
 
-Docker will be required in a future stage when database and infrastructure components are introduced.
+Docker Desktop and Docker Compose are required for local PostgreSQL infrastructure. The Domain, Application, CLI, API, and automated tests can be built and run without PostgreSQL because database integration has not been implemented.
 
 Check the installed .NET SDK:
 
@@ -836,6 +860,58 @@ The project currently uses:
 ```
 
 The required SDK family is declared in `global.json`.
+
+## Local PostgreSQL
+
+The root `compose.yaml` provisions PostgreSQL only. Its pinned `postgres:18.6-alpine3.24` image supports ARM64. Docker Compose configuration has been validated, PostgreSQL has been verified healthy, and data persistence across container recreation has been manually verified.
+
+Copy the environment template:
+
+```bash
+cp .env.example .env
+```
+
+Replace the example password in `.env` with a private local password. Never commit `.env`.
+
+Validate the Compose configuration, download the pinned image, and start PostgreSQL:
+
+```bash
+docker compose config --quiet
+docker compose pull
+docker compose up -d
+```
+
+Inspect service health and recent logs:
+
+```bash
+docker compose ps
+docker compose logs postgres --tail 20
+```
+
+The default port mapping is `127.0.0.1:${POSTGRES_PORT}` on the host to PostgreSQL port `5432` inside the container. `POSTGRES_BIND_ADDRESS` controls the host binding and defaults to `127.0.0.1`; `POSTGRES_PORT` defaults to `5432`. If host port `5432` is occupied, set `POSTGRES_PORT=5433` in the private `.env` file. Port `5433` is an optional local setting, not a project default.
+
+Open `psql` inside the container:
+
+```bash
+docker compose exec postgres \
+  psql \
+  --username singular_flow \
+  --dbname singular_flow
+```
+
+Stop the container while preserving data in the named volume `singular-flow-postgres-data`:
+
+```bash
+docker compose down
+```
+
+The following command is destructive to local database data because it removes the volume:
+
+```bash
+docker compose down --volumes
+```
+
+There is no Entity Framework Core integration, application connection string, database schema, or migration yet. This pull request establishes local database infrastructure only.
 
 ## Restore dependencies
 
@@ -867,6 +943,8 @@ dotnet build SingularFlow.slnx \
 Do not use `--no-restore` immediately after modifying project references unless a successful restore has already been completed.
 
 ## Run
+
+See [Local PostgreSQL](#local-postgresql) to start the database separately. The CLI and API currently run without it.
 
 Run the command-line application:
 
@@ -960,6 +1038,8 @@ The solution currently contains 55 automated tests distributed across:
 * 8 API integration tests.
 
 The eight API tests cover health, OpenAPI, valid logarithmic and uniform requests, unsupported sampling mode, invalid concentration exponent, missing sampling mode, and malformed JSON. They exercise the ASP.NET Core HTTP pipeline through `WebApplicationFactory<Program>`.
+
+PostgreSQL infrastructure verification is currently manual; there are no database integration tests yet.
 
 ## Code formatting
 
@@ -1076,10 +1156,15 @@ The project is developed incrementally.
 
 ### Phase 5 — Persistence
 
-* [ ] Introduce PostgreSQL.
-* [ ] Add Entity Framework Core.
+* [x] Add local PostgreSQL infrastructure with Docker Compose.
+* [x] Add persistent PostgreSQL storage and a container health check.
+* [x] Add a tracked environment-variable template while excluding local secrets.
+* [ ] Introduce an Infrastructure project.
+* [ ] Add Entity Framework Core and the Npgsql provider.
+* [ ] Add a DbContext and persistence entities.
+* [ ] Add migrations.
 * [ ] Store simulations and calculated snapshots.
-* [ ] Add migrations and indexed queries.
+* [ ] Add indexed queries and persistence integration tests.
 
 ### Phase 6 — Background processing
 
@@ -1103,6 +1188,8 @@ The project is developed incrementally.
 
 ### Phase 9 — Deployment
 
+PostgreSQL is containerized for local development; the .NET application is not yet containerized.
+
 * [ ] Containerize the application with Docker.
 * [ ] Add the required infrastructure services.
 * [ ] Deploy the application.
@@ -1114,6 +1201,8 @@ SingularFlow follows these principles:
 
 * Build features incrementally.
 * Keep the domain independent of infrastructure.
+* Keep persistence infrastructure separate from Domain and Application concerns.
+* Exclude local credentials and secrets from version control.
 * Keep application orchestration independent of presentation.
 * Depend on abstractions when multiple behaviors are required.
 * Write automated tests for meaningful behavior.
