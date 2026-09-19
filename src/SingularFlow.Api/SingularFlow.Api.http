@@ -1,6 +1,65 @@
 @SingularFlow.Api_HostAddress = http://localhost:5278
 
+### Health check
+
 GET {{SingularFlow.Api_HostAddress}}/health
 Accept: text/plain
 
-###
+### OpenAPI document
+
+GET {{SingularFlow.Api_HostAddress}}/openapi/v1.json
+Accept: application/json
+
+### Run logarithmic simulation
+
+POST {{SingularFlow.Api_HostAddress}}/api/simulations
+Content-Type: application/json
+Accept: application/json
+
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.9999,
+  "sampleCount": 6,
+  "samplingMode": "logarithmic"
+}
+
+### Run uniform simulation
+
+POST {{SingularFlow.Api_HostAddress}}/api/simulations
+Content-Type: application/json
+Accept: application/json
+
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.8,
+  "sampleCount": 5,
+  "samplingMode": "uniform"
+}
+
+### Unsupported sampling mode
+
+POST {{SingularFlow.Api_HostAddress}}/api/simulations
+Content-Type: application/json
+Accept: application/problem+json
+
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.9999,
+  "sampleCount": 6,
+  "samplingMode": "adaptive"
+}
+
+### Malformed JSON example
+
+POST {{SingularFlow.Api_HostAddress}}/api/simulations
+Content-Type: application/json
+Accept: application/problem+json
+
+{
+  "singularTime": 1.0,

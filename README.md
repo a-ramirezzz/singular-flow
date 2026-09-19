@@ -14,11 +14,11 @@ The current version calculates individual vortex-core scaling states and generat
 
 Application orchestration is separated from the mathematical domain through a dedicated use case. The command-line interface creates a simulation request, delegates execution to the application layer, and displays the structured result.
 
-An ASP.NET Core Web API foundation is now available. It currently exposes an operational health-check endpoint and generates an OpenAPI document in the Development environment.
+The ASP.NET Core Web API executes simulations over HTTP with uniform or logarithmic sampling. It also exposes a health-check endpoint and generates an OpenAPI document in Development. Invalid requests receive standardized HTTP errors.
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-The project is being developed incrementally with unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
+The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
 ## Current functionality
 
@@ -43,12 +43,17 @@ The project is being developed incrementally with unit tests, API integration te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, and API behavior with 49 automated test cases.
+* Verify domain, application, and API behavior with 55 automated tests, including eight API integration tests.
 * Validate every pull request and push to `main` with GitHub Actions.
 * Host an ASP.NET Core Web API.
 * Expose an operational health-check endpoint.
 * Generate an OpenAPI 3.1.1 document in Development.
 * Test the real ASP.NET Core HTTP pipeline in memory.
+* Execute simulations through `POST /api/simulations` with `uniform` or `logarithmic` sampling.
+* Map dedicated API contracts to Application requests and results, and return structured JSON states.
+* Return `400 Bad Request` with `ProblemDetails` for invalid simulation parameters and `ValidationProblemDetails` for model-binding or malformed-JSON failures.
+* Document the simulation operation and its `200` and `400` responses through OpenAPI.
+* Provide reusable HTTP requests in `SingularFlow.Api.http`.
 
 ## Mathematical model
 
@@ -312,6 +317,16 @@ singular-flow/
 │       └── ci.yml
 ├── src/
 │   ├── SingularFlow.Api/
+│   │   ├── Contracts/
+│   │   │   └── Simulations/
+│   │   │       ├── RunSimulationApiRequest.cs
+│   │   │       ├── RunSimulationApiResponse.cs
+│   │   │       ├── SimulationContractMapper.cs
+│   │   │       └── SimulationStateResponse.cs
+│   │   ├── Controllers/
+│   │   │   └── SimulationsController.cs
+│   │   ├── ErrorHandling/
+│   │   │   └── InvalidSimulationRequestExceptionHandler.cs
 │   │   ├── Properties/
 │   │   │   └── launchSettings.json
 │   │   ├── Program.cs
@@ -349,6 +364,10 @@ singular-flow/
 │   │   │   └── HealthEndpointTests.cs
 │   │   ├── OpenApi/
 │   │   │   └── OpenApiEndpointTests.cs
+│   │   ├── Simulations/
+│   │   │   ├── SimulationEndpointTests.cs
+│   │   │   ├── SimulationModelBindingTests.cs
+│   │   │   └── SimulationValidationTests.cs
 │   │   └── SingularFlow.Api.Tests.csproj
 │   ├── SingularFlow.Application.Tests/
 │   │   ├── Simulations/
@@ -397,7 +416,10 @@ Hosts the ASP.NET Core HTTP application.
 Current responsibilities include:
 
 * Starting and configuring the web application.
-* Registering MVC controller support for upcoming REST endpoints.
+* Receiving HTTP simulation requests through an MVC controller.
+* Mapping API contracts to Application requests and Application results to HTTP response contracts.
+* Executing `RunSimulationHandler` through dependency injection and returning JSON simulation results.
+* Producing standardized HTTP errors for invalid requests.
 * Registering OpenAPI generation.
 * Registering ASP.NET Core health-check services.
 * Exposing `GET /health`.
@@ -489,15 +511,13 @@ The test project depends directly on `SingularFlow.Application`.
 
 Contains in-memory integration tests for the ASP.NET Core host.
 
-The current API tests verify:
+The eight API integration tests verify:
 
-* Successful application startup.
-* `GET /health` returns `200 OK`.
-* The health response contains `Healthy`.
-* The OpenAPI endpoint returns JSON.
-* The generated document uses OpenAPI 3.1.1.
-* The generated document contains the expected API title.
-* The generated document exposes a valid `paths` object.
+* `GET /health` returns `200 OK` and `Healthy`.
+* The Development OpenAPI document contains the API metadata and simulation operation.
+* Valid logarithmic and uniform simulation requests return calculated series.
+* Unsupported sampling modes and invalid concentration exponents return `400 ProblemDetails`.
+* Missing sampling modes and malformed JSON return `400 ValidationProblemDetails`.
 
 The tests use `WebApplicationFactory<Program>` to execute the real HTTP pipeline without opening an external network port.
 
@@ -531,12 +551,15 @@ The dependency rules are:
 * Production projects do not depend on test projects.
 * Mathematical behavior is independent of HTTP and command-line presentation.
 
-The complete simulation execution flow is:
+The simulation execution flow for the CLI and HTTP API is:
 
 ```text
-Program.cs
-    │
-    ▼
+CLI Program.cs ────────────────────────────┐
+HTTP JSON → RunSimulationApiRequest         │
+    → SimulationsController                  │
+    → SimulationContractMapper               │
+    │                                        │
+    ▼                                        ▼
 RunSimulationRequest
     │
     ▼
@@ -560,9 +583,11 @@ RunSimulationHandler
                               │
                               ▼
                   RunSimulationResult
-                              │
-                              ▼
-                     CLI presentation
+                         │            │
+                         ▼            ▼
+                  CLI presentation   SimulationContractMapper
+                                    → RunSimulationApiResponse
+                                    → HTTP JSON
 ```
 
 ## Design decisions
@@ -657,7 +682,35 @@ This avoids exposing small accumulated floating-point differences at the configu
 
 `SingularFlow.Api` uses the ASP.NET Core Web SDK and acts as an additional presentation layer.
 
-The API currently provides infrastructure endpoints only. Simulation execution over HTTP will be introduced separately so the API foundation and simulation contract can be reviewed independently.
+It hosts the simulation controller alongside the health and Development OpenAPI endpoints.
+
+### Dedicated HTTP contracts
+
+`RunSimulationApiRequest`, `RunSimulationApiResponse`, and `SimulationStateResponse` define the JSON boundary independently of Application and Domain models. HTTP representation can evolve without exposing mathematical domain types directly.
+
+### HTTP contract mapper
+
+`SimulationContractMapper` converts supported sampling strings to Application `SamplingMode` values and maps Application results to response contracts. Mathematical behavior remains in the Domain layer.
+
+### Thin controller
+
+`SimulationsController` maps the request, delegates execution to Application, maps the result, and returns `200 OK`. It contains no scaling formulas.
+
+### Dependency injection
+
+`RunSimulationHandler` is registered with a scoped lifetime and injected into `SimulationsController`.
+
+### Global exception handling
+
+`InvalidSimulationRequestExceptionHandler` handles known invalid-input `ArgumentOutOfRangeException` failures as `400 ProblemDetails`. Unexpected exception types continue through the general error pipeline instead of being classified as client errors. `Program.cs` registers problem details and the handler, then enables exception handling middleware.
+
+### Model-binding validation
+
+`[ApiController]` handles missing required values and malformed JSON before the controller action runs, returning `400 ValidationProblemDetails`. These responses are separate from the custom exception handler.
+
+### HTTP status choice
+
+The endpoint calculates results in memory and does not persist a resource, so successful requests return `200 OK` rather than `201 Created`.
 
 ### Operational health check
 
@@ -669,13 +722,97 @@ It returns `200 OK` with `Healthy` while all registered checks report a healthy 
 
 OpenAPI generation is enabled only in the Development environment and currently produces an OpenAPI 3.1.1 document.
 
-The current document has no public simulation operations because those endpoints have not been introduced yet. The infrastructure health endpoint is intentionally not included as a controller operation.
+The document includes `POST /api/simulations` with request and response schemas and `200` and `400` responses. The infrastructure health endpoint is intentionally not included as a controller operation.
 
 ### In-memory API testing
 
 `SingularFlow.Api.Tests` uses `WebApplicationFactory<Program>`.
 
 This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server.
+
+## Simulation API
+
+The development base URL is `http://localhost:5278`. Send JSON to `POST /api/simulations`. The supported `samplingMode` strings are `uniform` and `logarithmic`.
+
+Logarithmic request:
+
+```json
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.9999,
+  "sampleCount": 6,
+  "samplingMode": "logarithmic"
+}
+```
+
+Uniform request:
+
+```json
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.8,
+  "sampleCount": 5,
+  "samplingMode": "uniform"
+}
+```
+
+`singularTime` is the theoretical singular time; `concentrationExponent` is the model parameter `h`; `startTime` and `endTime` bound the sampled interval; `sampleCount` sets the number of returned states; `samplingMode` selects how times are spaced. The mathematical and time-series limits are described above.
+
+Successful requests return `200 OK` with `application/json`. A response has this structure (one representative state is shown; the example request returns six):
+
+```json
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.9999,
+  "sampleCount": 6,
+  "samplingMode": "logarithmic",
+  "states": [
+    {
+      "time": 0.0,
+      "remainingTime": 1.0,
+      "radialLength": 1.0,
+      "axialLength": 1.0,
+      "angularVelocityScale": 1.0,
+      "radialVelocityScale": 1.0,
+      "coreVolumeScale": 1.0,
+      "coreEnergyScale": 1.0
+    }
+  ]
+}
+```
+
+Each state reports its sample time, remaining time, and the six scales defined in the mathematical model. Calculations stay in memory; the endpoint does not store simulations or create identifiers.
+
+Invalid sampling modes or mathematical and time-series parameters return `400 Bad Request` with `application/problem+json` and a `ProblemDetails` body, for example:
+
+```json
+{
+  "title": "Invalid simulation request.",
+  "status": 400,
+  "detail": "Sampling mode must be either 'uniform' or 'logarithmic'.",
+  "instance": "/api/simulations"
+}
+```
+
+The `detail` text can include parameter information. Missing required values and malformed JSON instead receive `400 Bad Request` with `application/problem+json` and a `ValidationProblemDetails` body:
+
+```json
+{
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": {
+    "SamplingMode": ["The SamplingMode field is required."]
+  }
+}
+```
+
+Validation error keys and messages depend on the failed input. The Development OpenAPI document at `/openapi/v1.json` includes the POST operation, request and response schemas, and `200` and `400` responses.
 
 ## Requirements
 
@@ -775,6 +912,24 @@ The Development OpenAPI document is available at:
 http://localhost:5278/openapi/v1.json
 ```
 
+Run a logarithmic simulation:
+
+```bash
+curl --include http://localhost:5278/api/simulations \
+  --header 'Content-Type: application/json' \
+  --data '{"singularTime":1.0,"concentrationExponent":0.005,"startTime":0.0,"endTime":0.9999,"sampleCount":6,"samplingMode":"logarithmic"}'
+```
+
+Check an unsupported sampling mode (`400 Bad Request`):
+
+```bash
+curl --include http://localhost:5278/api/simulations \
+  --header 'Content-Type: application/json' \
+  --data '{"singularTime":1.0,"concentrationExponent":0.005,"startTime":0.0,"endTime":0.9999,"sampleCount":6,"samplingMode":"adaptive"}'
+```
+
+`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for health, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, and malformed JSON.
+
 ## Test
 
 Run all automated tests:
@@ -798,11 +953,13 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 49 automated tests distributed across:
+The solution currently contains 55 automated tests distributed across:
 
 * 42 Domain unit tests.
 * 5 Application unit tests.
-* 2 API integration tests.
+* 8 API integration tests.
+
+The eight API tests cover health, OpenAPI, valid logarithmic and uniform requests, unsupported sampling mode, invalid concentration exponent, missing sampling mode, and malformed JSON. They exercise the ASP.NET Core HTTP pipeline through `WebApplicationFactory<Program>`.
 
 ## Code formatting
 
@@ -912,10 +1069,10 @@ The project is developed incrementally.
 * [x] Add an operational health-check endpoint.
 * [x] Generate an OpenAPI document in Development.
 * [x] Add API integration-test infrastructure.
-* [ ] Add simulation REST endpoints.
-* [ ] Add HTTP request validation.
-* [ ] Document simulation operations through OpenAPI.
-* [ ] Expand integration tests for simulation execution.
+* [x] Add a simulation REST endpoint.
+* [x] Add HTTP request validation.
+* [x] Document simulation operations through OpenAPI.
+* [x] Expand integration tests for simulation execution.
 
 ### Phase 5 — Persistence
 
