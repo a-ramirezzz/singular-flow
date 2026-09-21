@@ -18,7 +18,7 @@ The ASP.NET Core Web API executes simulations over HTTP with uniform or logarith
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-Local PostgreSQL 18.6 infrastructure is available through Docker Compose. The application is not yet connected to PostgreSQL; simulations are still calculated in memory.
+Local PostgreSQL 18.6 infrastructure is available through Docker Compose. An EF Core persistence foundation now defines the PostgreSQL schema, mappings, and initial migration in `SingularFlow.Infrastructure`. The schema has been applied and verified locally, but the API is not yet connected to Infrastructure at runtime and simulations are still calculated in memory.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -45,7 +45,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, and API behavior with 55 automated tests, including eight API integration tests.
+* Verify domain, application, API, and Infrastructure behavior with 66 automated tests, including eight API integration tests and 11 EF Core model and design-time tests.
 * Validate every pull request and push to `main` with GitHub Actions.
 * Host an ASP.NET Core Web API.
 * Expose an operational health-check endpoint.
@@ -59,6 +59,8 @@ The project is being developed incrementally with Domain and Application unit te
 * Start PostgreSQL locally with Docker Compose and check the database container's health.
 * Persist local database data through a named Docker volume.
 * Keep local database credentials outside version control.
+* Model simulations and their generated states with EF Core persistence entities, PostgreSQL mappings, constraints, indexes, and a tracked initial migration.
+* Create the EF Core context at design time without storing a database password in the repository.
 
 ## Mathematical model
 
@@ -301,12 +303,13 @@ Sample count: 6
 * PostgreSQL 18.6 (`postgres:18.6-alpine3.24`)
 * Docker
 * Docker Compose
+* Entity Framework Core 10.0.12 and Entity Framework Core Design 10.0.12
+* Npgsql Entity Framework Core provider 10.0.3
 
 ## Planned technologies
 
 Future versions are expected to introduce:
 
-* Entity Framework Core
 * Background services
 * SignalR
 * Blazor
@@ -351,20 +354,30 @@ singular-flow/
 │   ├── SingularFlow.Cli/
 │   │   ├── Program.cs
 │   │   └── SingularFlow.Cli.csproj
-│   └── SingularFlow.Domain/
-│       ├── Calculations/
-│       │   ├── BlowupScalingCalculator.cs
-│       │   └── BlowupSeriesGenerator.cs
-│       ├── Models/
-│       │   ├── BlowupParameters.cs
-│       │   ├── BlowupState.cs
-│       │   └── TimeSeriesParameters.cs
-│       ├── Sampling/
-│       │   ├── ITimeSamplingStrategy.cs
-│       │   ├── LogarithmicTimeSamplingStrategy.cs
-│       │   ├── TimeSamplingValidation.cs
-│       │   └── UniformTimeSamplingStrategy.cs
-│       └── SingularFlow.Domain.csproj
+│   ├── SingularFlow.Domain/
+│   │   ├── Calculations/
+│   │   │   ├── BlowupScalingCalculator.cs
+│   │   │   └── BlowupSeriesGenerator.cs
+│   │   ├── Models/
+│   │   │   ├── BlowupParameters.cs
+│   │   │   ├── BlowupState.cs
+│   │   │   └── TimeSeriesParameters.cs
+│   │   ├── Sampling/
+│   │   │   ├── ITimeSamplingStrategy.cs
+│   │   │   ├── LogarithmicTimeSamplingStrategy.cs
+│   │   │   ├── TimeSamplingValidation.cs
+│   │   │   └── UniformTimeSamplingStrategy.cs
+│   │   └── SingularFlow.Domain.csproj
+│   └── SingularFlow.Infrastructure/
+│       ├── Persistence/
+│       │   ├── Configurations/
+│       │   ├── DesignTime/
+│       │   │   └── SingularFlowDbContextFactory.cs
+│       │   ├── Entities/
+│       │   ├── Migrations/
+│       │   │   └── 20260921055058_InitialPersistence.cs
+│       │   └── SingularFlowDbContext.cs
+│       └── SingularFlow.Infrastructure.csproj
 ├── tests/
 │   ├── SingularFlow.Api.Tests/
 │   │   ├── Health/
@@ -380,18 +393,25 @@ singular-flow/
 │   │   ├── Simulations/
 │   │   │   └── RunSimulationHandlerTests.cs
 │   │   └── SingularFlow.Application.Tests.csproj
-│   └── SingularFlow.Domain.Tests/
-│       ├── BlowupParametersTests.cs
-│       ├── BlowupScalingCalculatorTests.cs
-│       ├── BlowupSeriesGeneratorTests.cs
-│       ├── LogarithmicTimeSamplingStrategyTests.cs
-│       ├── TimeSeriesParametersTests.cs
-│       ├── UniformTimeSamplingStrategyTests.cs
-│       └── SingularFlow.Domain.Tests.csproj
+│   ├── SingularFlow.Domain.Tests/
+│   │   ├── BlowupParametersTests.cs
+│   │   ├── BlowupScalingCalculatorTests.cs
+│   │   ├── BlowupSeriesGeneratorTests.cs
+│   │   ├── LogarithmicTimeSamplingStrategyTests.cs
+│   │   ├── TimeSeriesParametersTests.cs
+│   │   ├── UniformTimeSamplingStrategyTests.cs
+│   │   └── SingularFlow.Domain.Tests.csproj
+│   └── SingularFlow.Infrastructure.Tests/
+│       ├── Persistence/
+│       │   ├── DesignTime/
+│       │   │   └── SingularFlowDbContextFactoryTests.cs
+│       │   └── SingularFlowDbContextModelTests.cs
+│       └── SingularFlow.Infrastructure.Tests.csproj
 ├── .editorconfig
 ├── .env.example
 ├── .gitignore
 ├── compose.yaml
+├── dotnet-tools.json
 ├── global.json
 ├── SingularFlow.slnx
 └── README.md
@@ -401,11 +421,11 @@ singular-flow/
 
 ## Architecture
 
-The solution currently contains seven projects separated into production code and automated test projects.
+The solution currently contains nine projects separated into five production projects and four automated test projects.
 
 ### Local infrastructure
 
-Docker Compose currently provisions only PostgreSQL through the root `compose.yaml` file. This file is not a .NET project, and no .NET project depends on the database yet.
+Docker Compose provisions PostgreSQL through the root `compose.yaml` file. Infrastructure contains the EF Core PostgreSQL model and migration, but the API does not register or depend on Infrastructure at runtime yet.
 
 ### SingularFlow.Domain
 
@@ -463,6 +483,20 @@ Responsibilities include:
 The application project depends on `SingularFlow.Domain`.
 
 It does not depend on the command-line interface or test projects.
+
+### SingularFlow.Infrastructure
+
+Contains the EF Core persistence foundation for PostgreSQL.
+
+Responsibilities include:
+
+* Defining `SingularFlowDbContext` and its `simulations` and `simulation_states` sets.
+* Mapping separate Infrastructure persistence entities instead of mapping Domain records directly.
+* Configuring generated keys, explicit PostgreSQL types, snake_case identifiers, constraints, indexes, and the required simulation-to-states relationship.
+* Tracking the initial `20260921055058_InitialPersistence` migration.
+* Providing design-time context creation without a stored password.
+
+Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. The API does not reference or register Infrastructure yet, and no persistence repository implementation exists, so API simulation requests are not saved to PostgreSQL.
 
 ### SingularFlow.Cli
 
@@ -538,16 +572,25 @@ The tests use `WebApplicationFactory<Program>` to execute the real HTTP pipeline
 
 The test project depends directly on `SingularFlow.Api`.
 
+### SingularFlow.Infrastructure.Tests
+
+Contains 11 automated tests for EF Core model metadata and design-time context creation.
+
+The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, and Npgsql provider configuration. They inspect model metadata without requiring a running database.
+
+The test project depends directly on `SingularFlow.Infrastructure`.
+
 ## Dependency direction
 
 The direct production project dependencies are:
 
 ```text
-SingularFlow.Api ──────┐
-                       ├──> SingularFlow.Application
-SingularFlow.Cli ──────┘                │
-                                        ▼
-                             SingularFlow.Domain
+SingularFlow.Api ────────────────> SingularFlow.Application
+SingularFlow.Cli ────────────────> SingularFlow.Application
+SingularFlow.Infrastructure ─────> SingularFlow.Application
+                                             │
+                                             ▼
+                                  SingularFlow.Domain
 ```
 
 The direct test project dependencies are:
@@ -556,6 +599,7 @@ The direct test project dependencies are:
 SingularFlow.Api.Tests ─────────> SingularFlow.Api
 SingularFlow.Application.Tests ─> SingularFlow.Application
 SingularFlow.Domain.Tests ──────> SingularFlow.Domain
+SingularFlow.Infrastructure.Tests ─> SingularFlow.Infrastructure
 ```
 
 The dependency rules are:
@@ -563,9 +607,10 @@ The dependency rules are:
 * `SingularFlow.Domain` has no dependency on higher-level projects.
 * `SingularFlow.Application` depends on `SingularFlow.Domain`.
 * `SingularFlow.Api` and `SingularFlow.Cli` depend on `SingularFlow.Application`.
+* `SingularFlow.Infrastructure` depends on `SingularFlow.Application`; Domain remains independent of Infrastructure.
 * Production projects do not depend on test projects.
 * Mathematical behavior is independent of HTTP and command-line presentation.
-* PostgreSQL has no application dependency yet because persistence integration has not been implemented.
+* The API has no Infrastructure dependency yet because runtime database registration and repository integration have not been implemented.
 
 The simulation execution flow for the CLI and HTTP API is:
 
@@ -615,6 +660,16 @@ The Compose service pins `postgres:18.6-alpine3.24` instead of using `latest`; t
 The default host binding is loopback-only (`POSTGRES_BIND_ADDRESS=127.0.0.1`). `POSTGRES_PORT` defaults to `5432` and can be changed when that host port is occupied. The database always listens on port `5432` inside the container.
 
 The tracked `.env.example` template is separate from the ignored local `.env` file, so local credentials stay out of version control. The named volume `singular-flow-postgres-data` preserves data across container recreation and mounts at `/var/lib/postgresql`, the PostgreSQL 18 data location.
+
+### EF Core persistence model
+
+`SingularFlowDbContext` maps separate Infrastructure entities rather than coupling EF Core to Domain records. A simulation has a generated `uuid` key and many required state rows; each state has a generated `bigint` key, and deleting a simulation cascades to its states.
+
+The mappings use snake_case PostgreSQL identifiers and explicit column types. The schema enforces the supported sample count, concentration exponent, time ordering, and non-negative state sequence with database check constraints. It also defines a unique `(simulation_id, sequence)` index, an index on `created_at_utc`, and a `CURRENT_TIMESTAMP` default for `created_at_utc`.
+
+### Design-time database context
+
+`SingularFlowDbContextFactory` lets the local EF tool inspect the model and manage migrations without starting the API. Its design-time connection string identifies the local host, port, database, and user but intentionally contains no password. Real local database credentials belong only in the ignored `.env` file and must never be committed.
 
 ### Immutable configuration objects
 
@@ -845,7 +900,7 @@ Install the following software before building the project:
 * .NET 10 SDK
 * Git
 
-Docker Desktop and Docker Compose are required for local PostgreSQL infrastructure. The Domain, Application, CLI, API, and automated tests can be built and run without PostgreSQL because database integration has not been implemented.
+Docker Desktop and Docker Compose are required for local PostgreSQL infrastructure. The solution and automated metadata tests can be built and run without PostgreSQL because runtime database integration and database-backed integration tests have not been implemented.
 
 Check the installed .NET SDK:
 
@@ -863,7 +918,7 @@ The required SDK family is declared in `global.json`.
 
 ## Local PostgreSQL
 
-The root `compose.yaml` provisions PostgreSQL only. Its pinned `postgres:18.6-alpine3.24` image supports ARM64. Docker Compose configuration has been validated, PostgreSQL has been verified healthy, and data persistence across container recreation has been manually verified.
+The root `compose.yaml` provisions PostgreSQL only. Its pinned `postgres:18.6-alpine3.24` image supports ARM64. Docker Compose configuration has been validated, PostgreSQL has been verified healthy, data persistence across container recreation has been manually verified, and the EF Core schema has been manually applied and verified locally.
 
 Copy the environment template:
 
@@ -911,13 +966,45 @@ The following command is destructive to local database data because it removes t
 docker compose down --volumes
 ```
 
-There is no Entity Framework Core integration, application connection string, database schema, or migration yet. This pull request establishes local database infrastructure only.
+The API still runs without PostgreSQL. It does not register `SingularFlowDbContext` or otherwise reference Infrastructure at runtime, and no application persistence abstraction or repository implementation exists. Consequently, `POST /api/simulations` calculates and returns results but does not save them.
+
+## EF Core migrations and database schema
+
+The repository tracks `dotnet-ef` 10.0.12 in `dotnet-tools.json`. Restore the local tool from the repository root:
+
+```bash
+dotnet tool restore
+```
+
+The initial migration is `20260921055058_InitialPersistence`. It creates:
+
+* `simulations`, containing the requested configuration, sampling mode, and creation timestamp.
+* `simulation_states`, containing the ordered calculated states and a required foreign key to `simulations` with cascade deletion.
+
+For design-time inspection, specify Infrastructure as both the target and startup project:
+
+```bash
+dotnet ef migrations list \
+  --project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj \
+  --startup-project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj
+```
+
+Check that the model still matches the latest migration:
+
+```bash
+dotnet ef migrations has-pending-model-changes \
+  --project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj \
+  --startup-project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj
+```
+
+These design-time commands use `SingularFlowDbContextFactory`; they do not make API persistence operational. Applying or removing migrations remains a deliberate database operation and is not part of normal build or test execution.
 
 ## Restore dependencies
 
 From the repository root, run:
 
 ```bash
+dotnet tool restore
 dotnet restore SingularFlow.slnx
 ```
 
@@ -1031,15 +1118,16 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 55 automated tests distributed across:
+The solution currently contains 66 automated tests distributed across:
 
 * 42 Domain unit tests.
 * 5 Application unit tests.
 * 8 API integration tests.
+* 11 Infrastructure model and design-time tests.
 
 The eight API tests cover health, OpenAPI, valid logarithmic and uniform requests, unsupported sampling mode, invalid concentration exponent, missing sampling mode, and malformed JSON. They exercise the ASP.NET Core HTTP pipeline through `WebApplicationFactory<Program>`.
 
-PostgreSQL infrastructure verification is currently manual; there are no database integration tests yet.
+The Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. Schema application and PostgreSQL infrastructure verification are currently manual; there are no database-backed integration tests yet.
 
 ## Code formatting
 
@@ -1159,12 +1247,15 @@ The project is developed incrementally.
 * [x] Add local PostgreSQL infrastructure with Docker Compose.
 * [x] Add persistent PostgreSQL storage and a container health check.
 * [x] Add a tracked environment-variable template while excluding local secrets.
-* [ ] Introduce an Infrastructure project.
-* [ ] Add Entity Framework Core and the Npgsql provider.
-* [ ] Add a DbContext and persistence entities.
-* [ ] Add migrations.
-* [ ] Store simulations and calculated snapshots.
-* [ ] Add indexed queries and persistence integration tests.
+* [x] Introduce an Infrastructure project.
+* [x] Add Entity Framework Core and the Npgsql provider.
+* [x] Add a DbContext, separate persistence entities, and relational mappings.
+* [x] Add the initial persistence migration.
+* [x] Add automated EF Core model metadata tests.
+* [ ] Register Infrastructure and the database context in the API at runtime.
+* [ ] Introduce an application persistence abstraction and repository implementation.
+* [ ] Save simulation executions and calculated states.
+* [ ] Add database-backed persistence integration tests.
 
 ### Phase 6 — Background processing
 
