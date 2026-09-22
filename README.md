@@ -18,7 +18,7 @@ The ASP.NET Core Web API executes simulations over HTTP with uniform or logarith
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-Local PostgreSQL 18.6 infrastructure is available through Docker Compose. An EF Core persistence foundation now defines the PostgreSQL schema, mappings, and initial migration in `SingularFlow.Infrastructure`. The schema has been applied and verified locally, but the API is not yet connected to Infrastructure at runtime and simulations are still calculated in memory.
+Local PostgreSQL 18.6 infrastructure is available through Docker Compose. `SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The API connects to PostgreSQL through Npgsql and waits for each simulation and its ordered states to be saved before returning the existing `200 OK` response.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -45,13 +45,14 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, API, and Infrastructure behavior with 66 automated tests, including eight API integration tests and 11 EF Core model and design-time tests.
+* Verify domain, application, API, and Infrastructure behavior with 70 automated tests: 42 Domain, 6 Application, 10 API, and 12 Infrastructure tests.
 * Validate every pull request and push to `main` with GitHub Actions.
 * Host an ASP.NET Core Web API.
 * Expose an operational health-check endpoint.
 * Generate an OpenAPI 3.1.1 document in Development.
 * Test the real ASP.NET Core HTTP pipeline in memory.
 * Execute simulations through `POST /api/simulations` with `uniform` or `logarithmic` sampling.
+* Persist each API simulation and its ordered states to PostgreSQL before returning the calculated series.
 * Map dedicated API contracts to Application requests and results, and return structured JSON states.
 * Return `400 Bad Request` with `ProblemDetails` for invalid simulation parameters and `ValidationProblemDetails` for model-binding or malformed-JSON failures.
 * Document the simulation operation and its `200` and `400` responses through OpenAPI.
@@ -60,6 +61,8 @@ The project is being developed incrementally with Domain and Application unit te
 * Persist local database data through a named Docker volume.
 * Keep local database credentials outside version control.
 * Model simulations and their generated states with EF Core persistence entities, PostgreSQL mappings, constraints, indexes, and a tracked initial migration.
+* Keep the Application persistence contract and orchestration independent of EF Core.
+* Verify the real HTTP-to-PostgreSQL path with a dedicated database integration test.
 * Create the EF Core context at design time without storing a database password in the repository.
 
 ## Mathematical model
@@ -346,6 +349,8 @@ singular-flow/
 │   │   └── appsettings.json
 │   ├── SingularFlow.Application/
 │   │   ├── Simulations/
+│   │   │   ├── ISimulationRepository.cs
+│   │   │   ├── RunAndSaveSimulationHandler.cs
 │   │   │   ├── RunSimulationHandler.cs
 │   │   │   ├── RunSimulationRequest.cs
 │   │   │   ├── RunSimulationResult.cs
@@ -374,6 +379,7 @@ singular-flow/
 │       │   ├── DesignTime/
 │       │   │   └── SingularFlowDbContextFactory.cs
 │       │   ├── Entities/
+│       │   ├── EfSimulationRepository.cs
 │       │   ├── Migrations/
 │       │   │   └── 20260921055058_InitialPersistence.cs
 │       │   └── SingularFlowDbContext.cs
@@ -385,12 +391,16 @@ singular-flow/
 │   │   ├── OpenApi/
 │   │   │   └── OpenApiEndpointTests.cs
 │   │   ├── Simulations/
+│   │   │   ├── SimulationDatabaseEndpointTests.cs
 │   │   │   ├── SimulationEndpointTests.cs
+│   │   │   ├── SimulationEndpointFactory.cs
 │   │   │   ├── SimulationModelBindingTests.cs
+│   │   │   ├── SimulationPersistenceEndpointTests.cs
 │   │   │   └── SimulationValidationTests.cs
 │   │   └── SingularFlow.Api.Tests.csproj
 │   ├── SingularFlow.Application.Tests/
 │   │   ├── Simulations/
+│   │   │   ├── RunAndSaveSimulationHandlerTests.cs
 │   │   │   └── RunSimulationHandlerTests.cs
 │   │   └── SingularFlow.Application.Tests.csproj
 │   ├── SingularFlow.Domain.Tests/
@@ -405,6 +415,7 @@ singular-flow/
 │       ├── Persistence/
 │       │   ├── DesignTime/
 │       │   │   └── SingularFlowDbContextFactoryTests.cs
+│       │   ├── EfSimulationRepositoryTests.cs
 │       │   └── SingularFlowDbContextModelTests.cs
 │       └── SingularFlow.Infrastructure.Tests.csproj
 ├── .editorconfig
@@ -425,7 +436,7 @@ The solution currently contains nine projects separated into five production pro
 
 ### Local infrastructure
 
-Docker Compose provisions PostgreSQL through the root `compose.yaml` file. Infrastructure contains the EF Core PostgreSQL model and migration, but the API does not register or depend on Infrastructure at runtime yet.
+Docker Compose provisions PostgreSQL through the root `compose.yaml` file. Infrastructure contains the EF Core PostgreSQL model, migration, and repository. The API registers the context and repository at runtime and requires an existing migrated schema for normal simulation requests.
 
 ### SingularFlow.Domain
 
@@ -453,7 +464,9 @@ Current responsibilities include:
 * Starting and configuring the web application.
 * Receiving HTTP simulation requests through an MVC controller.
 * Mapping API contracts to Application requests and Application results to HTTP response contracts.
-* Executing `RunSimulationHandler` through dependency injection and returning JSON simulation results.
+* Executing `RunAndSaveSimulationHandler` through dependency injection and returning JSON simulation results after persistence completes.
+* Registering `SingularFlowDbContext` with Npgsql from `ConnectionStrings:SingularFlow`.
+* Binding `ISimulationRepository` to `EfSimulationRepository`.
 * Producing standardized HTTP errors for invalid requests.
 * Registering OpenAPI generation.
 * Registering ASP.NET Core health-check services.
@@ -462,7 +475,7 @@ Current responsibilities include:
 * Applying HTTPS redirection.
 * Providing local HTTP and HTTPS launch profiles.
 
-The API depends directly on `SingularFlow.Application`.
+The API depends directly on `SingularFlow.Application` and `SingularFlow.Infrastructure` as the composition root.
 
 It does not contain mathematical formulas or domain validation rules.
 
@@ -477,10 +490,12 @@ Responsibilities include:
 * Creating validated domain configurations.
 * Coordinating the scaling calculator and series generator.
 * Executing a complete simulation use case.
+* Defining `ISimulationRepository` as the persistence boundary.
+* Coordinating calculation and awaited persistence through `RunAndSaveSimulationHandler`.
 * Returning structured simulation results.
 * Preventing presentation concerns from entering the domain layer.
 
-The application project depends on `SingularFlow.Domain`.
+The application project depends on `SingularFlow.Domain` and has no EF Core dependency.
 
 It does not depend on the command-line interface or test projects.
 
@@ -494,9 +509,11 @@ Responsibilities include:
 * Mapping separate Infrastructure persistence entities instead of mapping Domain records directly.
 * Configuring generated keys, explicit PostgreSQL types, snake_case identifiers, constraints, indexes, and the required simulation-to-states relationship.
 * Tracking the initial `20260921055058_InitialPersistence` migration.
+* Implementing `ISimulationRepository` with `EfSimulationRepository`.
+* Saving one simulation and all ordered state entities with one `SaveChangesAsync` call.
 * Providing design-time context creation without a stored password.
 
-Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. The API does not reference or register Infrastructure yet, and no persistence repository implementation exists, so API simulation requests are not saved to PostgreSQL.
+Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. EF Core remains confined to Infrastructure and the API composition root; Application and Domain do not depend on it.
 
 ### SingularFlow.Cli
 
@@ -543,7 +560,7 @@ The test project depends directly on `SingularFlow.Domain`.
 
 Contains automated tests for application use-case behavior.
 
-The current application tests verify:
+The six application tests verify:
 
 * Rejection of a null simulation request.
 * Execution with uniform sampling.
@@ -553,30 +570,33 @@ The current application tests verify:
 * Preservation of the selected sampling mode.
 * Rejection of unsupported sampling modes.
 * Production of structured simulation results.
+* Delegation of calculated results to the repository before returning them.
 
 The test project depends directly on `SingularFlow.Application`.
 
 ### SingularFlow.Api.Tests
 
-Contains in-memory integration tests for the ASP.NET Core host.
+Contains integration tests for the ASP.NET Core host, including one database-backed end-to-end test.
 
-The eight API integration tests verify:
+The ten API tests verify:
 
 * `GET /health` returns `200 OK` and `Healthy`.
 * The Development OpenAPI document contains the API metadata and simulation operation.
 * Valid logarithmic and uniform simulation requests return calculated series.
 * Unsupported sampling modes and invalid concentration exponents return `400 ProblemDetails`.
 * Missing sampling modes and malformed JSON return `400 ValidationProblemDetails`.
+* The persistence abstraction receives the calculated simulation before a successful response is returned.
+* The actual HTTP-to-PostgreSQL path stores a simulation and its ordered states.
 
-The tests use `WebApplicationFactory<Program>` to execute the real HTTP pipeline without opening an external network port.
+The contract and validation tests use `WebApplicationFactory<Program>` with a test repository, so they execute the real HTTP pipeline without requiring PostgreSQL. The dedicated database endpoint test retains the production repository, applies pending migrations, and deletes its inserted simulation afterward.
 
 The test project depends directly on `SingularFlow.Api`.
 
 ### SingularFlow.Infrastructure.Tests
 
-Contains 11 automated tests for EF Core model metadata and design-time context creation.
+Contains 12 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
 
-The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, and Npgsql provider configuration. They inspect model metadata without requiring a running database.
+The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, and persistence of one simulation with ordered states. The database test applies pending migrations and rolls back its transaction.
 
 The test project depends directly on `SingularFlow.Infrastructure`.
 
@@ -586,6 +606,8 @@ The direct production project dependencies are:
 
 ```text
 SingularFlow.Api ────────────────> SingularFlow.Application
+        │
+        └────────────────────────> SingularFlow.Infrastructure
 SingularFlow.Cli ────────────────> SingularFlow.Application
 SingularFlow.Infrastructure ─────> SingularFlow.Application
                                              │
@@ -606,49 +628,35 @@ The dependency rules are:
 
 * `SingularFlow.Domain` has no dependency on higher-level projects.
 * `SingularFlow.Application` depends on `SingularFlow.Domain`.
-* `SingularFlow.Api` and `SingularFlow.Cli` depend on `SingularFlow.Application`.
+* `SingularFlow.Api` depends on `SingularFlow.Application` and `SingularFlow.Infrastructure`; `SingularFlow.Cli` depends on Application.
 * `SingularFlow.Infrastructure` depends on `SingularFlow.Application`; Domain remains independent of Infrastructure.
 * Production projects do not depend on test projects.
 * Mathematical behavior is independent of HTTP and command-line presentation.
-* The API has no Infrastructure dependency yet because runtime database registration and repository integration have not been implemented.
+* `SingularFlow.Domain` and `SingularFlow.Application` do not depend on EF Core.
 
 The simulation execution flow for the CLI and HTTP API is:
 
 ```text
-CLI Program.cs ────────────────────────────┐
-HTTP JSON → RunSimulationApiRequest         │
-    → SimulationsController                  │
-    → SimulationContractMapper               │
-    │                                        │
-    ▼                                        ▼
-RunSimulationRequest
-    │
-    ▼
-RunSimulationHandler
-    │
-    ├── Creates BlowupParameters
-    ├── Creates TimeSeriesParameters
-    └── Selects ITimeSamplingStrategy
-                  │
-                  ├── UniformTimeSamplingStrategy
-                  └── LogarithmicTimeSamplingStrategy
-                              │
-                              ▼
-                   BlowupSeriesGenerator
-                              │
-                              ▼
-                  BlowupScalingCalculator
-                              │
-                              ▼
-                  IReadOnlyList<BlowupState>
-                              │
-                              ▼
-                  RunSimulationResult
-                         │            │
-                         ▼            ▼
-                  CLI presentation   SimulationContractMapper
-                                    → RunSimulationApiResponse
-                                    → HTTP JSON
+CLI Program.cs → RunSimulationHandler ───────────────┐
+                                                     │
+HTTP JSON → SimulationsController                    │
+    → SimulationContractMapper                       │
+    → RunAndSaveSimulationHandler                    │
+        ├── RunSimulationHandler ────────────────────┤
+        └── ISimulationRepository                    │
+            → EfSimulationRepository                 │
+            → PostgreSQL                             │
+                                                     ▼
+                                          RunSimulationRequest
+                                                     │
+                                                     ▼
+                                          Domain calculation
+                                                     │
+                                                     ▼
+                                          RunSimulationResult
+                                              │             │
+                                              ▼             ▼
+                                      CLI presentation   HTTP JSON
 ```
 
 ## Design decisions
@@ -726,6 +734,8 @@ The handler:
 * Executes the domain series generator.
 * Returns a `RunSimulationResult`.
 
+`RunAndSaveSimulationHandler` decorates that calculation use case with persistence. It awaits `ISimulationRepository.SaveAsync` and returns the same result only after the save completes. The interface belongs to Application, so orchestration remains independent of EF Core.
+
 ### Structured request and result objects
 
 `RunSimulationRequest` defines the complete input required to execute a simulation.
@@ -777,7 +787,7 @@ It hosts the simulation controller alongside the health and Development OpenAPI 
 
 ### Dependency injection
 
-`RunSimulationHandler` is registered with a scoped lifetime and injected into `SimulationsController`.
+`RunSimulationHandler` and `RunAndSaveSimulationHandler` are registered with scoped lifetimes. The API registers `SingularFlowDbContext` with Npgsql, maps `ISimulationRepository` to `EfSimulationRepository`, and injects the calculate-and-save handler into `SimulationsController`.
 
 ### Global exception handling
 
@@ -789,7 +799,7 @@ It hosts the simulation controller alongside the health and Development OpenAPI 
 
 ### HTTP status choice
 
-The endpoint calculates results in memory and does not persist a resource, so successful requests return `200 OK` rather than `201 Created`.
+The endpoint preserves its existing response contract: after the calculated simulation has been persisted, successful requests return the result as `200 OK`. The response does not expose a resource location or database identifier.
 
 ### Operational health check
 
@@ -807,7 +817,7 @@ The document includes `POST /api/simulations` with request and response schemas 
 
 `SingularFlow.Api.Tests` uses `WebApplicationFactory<Program>`.
 
-This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server.
+This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server. Existing contract and validation tests replace `ISimulationRepository` with a test implementation; a separate test uses `EfSimulationRepository` to verify the actual HTTP-to-PostgreSQL path.
 
 ## Simulation API
 
@@ -866,7 +876,7 @@ Successful requests return `200 OK` with `application/json`. A response has this
 }
 ```
 
-Each state reports its sample time, remaining time, and the six scales defined in the mathematical model. Calculations stay in memory; the endpoint does not store simulations or create identifiers.
+Each state reports its sample time, remaining time, and the six scales defined in the mathematical model. Before returning this response, the endpoint stores the simulation configuration and all states in sequence order. Database identifiers remain an internal persistence concern and are not added to the HTTP contract.
 
 Invalid sampling modes or mathematical and time-series parameters return `400 Bad Request` with `application/problem+json` and a `ProblemDetails` body, for example:
 
@@ -900,7 +910,7 @@ Install the following software before building the project:
 * .NET 10 SDK
 * Git
 
-Docker Desktop and Docker Compose are required for local PostgreSQL infrastructure. The solution and automated metadata tests can be built and run without PostgreSQL because runtime database integration and database-backed integration tests have not been implemented.
+Docker Desktop and Docker Compose are required to run the API locally and to execute the full test suite, which includes database integration tests.
 
 Check the installed .NET SDK:
 
@@ -945,6 +955,17 @@ docker compose logs postgres --tail 20
 
 The default port mapping is `127.0.0.1:${POSTGRES_PORT}` on the host to PostgreSQL port `5432` inside the container. `POSTGRES_BIND_ADDRESS` controls the host binding and defaults to `127.0.0.1`; `POSTGRES_PORT` defaults to `5432`. If host port `5432` is occupied, set `POSTGRES_PORT=5433` in the private `.env` file. Port `5433` is an optional local setting, not a project default.
 
+Load the private values and configure the API connection for the current shell. This uses the configured `POSTGRES_PORT` rather than assuming port `5432`:
+
+```bash
+set -a
+source .env
+set +a
+export ConnectionStrings__SingularFlow="Host=${POSTGRES_BIND_ADDRESS:-127.0.0.1};Port=${POSTGRES_PORT:-5432};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+```
+
+ASP.NET Core maps `ConnectionStrings__SingularFlow` to `ConnectionStrings:SingularFlow`. Keep the value in the shell environment and the ignored `.env`; do not print it or commit `.env`.
+
 Open `psql` inside the container:
 
 ```bash
@@ -966,7 +987,7 @@ The following command is destructive to local database data because it removes t
 docker compose down --volumes
 ```
 
-The API still runs without PostgreSQL. It does not register `SingularFlowDbContext` or otherwise reference Infrastructure at runtime, and no application persistence abstraction or repository implementation exists. Consequently, `POST /api/simulations` calculates and returns results but does not save them.
+The API requires PostgreSQL for `POST /api/simulations`. The schema must already exist: startup registers the context but deliberately does not apply migrations automatically.
 
 ## EF Core migrations and database schema
 
@@ -997,7 +1018,16 @@ dotnet ef migrations has-pending-model-changes \
   --startup-project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj
 ```
 
-These design-time commands use `SingularFlowDbContextFactory`; they do not make API persistence operational. Applying or removing migrations remains a deliberate database operation and is not part of normal build or test execution.
+After configuring `ConnectionStrings__SingularFlow`, apply pending migrations to the development database before normal API use:
+
+```bash
+dotnet ef database update \
+  --project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj \
+  --startup-project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj \
+  --connection "$ConnectionStrings__SingularFlow"
+```
+
+These design-time commands use `SingularFlowDbContextFactory`. Applying or removing migrations remains a deliberate database operation; the API does not migrate the database during startup.
 
 ## Restore dependencies
 
@@ -1031,7 +1061,7 @@ Do not use `--no-restore` immediately after modifying project references unless 
 
 ## Run
 
-See [Local PostgreSQL](#local-postgresql) to start the database separately. The CLI and API currently run without it.
+See [Local PostgreSQL](#local-postgresql) to start PostgreSQL, configure `ConnectionStrings__SingularFlow`, and apply the schema before running the API. The CLI does not require PostgreSQL.
 
 Run the command-line application:
 
@@ -1097,9 +1127,22 @@ curl --include http://localhost:5278/api/simulations \
 
 ## Test
 
-Run all automated tests:
+The database integration tests require the dedicated `singular_flow_tests` database and reject a connection whose database name is not exactly `singular_flow_tests`. Create it only when it does not already exist:
 
 ```bash
+docker compose exec postgres sh -c \
+  'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align --command "SELECT 1 FROM pg_database WHERE datname = '\''singular_flow_tests'\''" | grep -qx 1 || createdb --username "$POSTGRES_USER" singular_flow_tests'
+```
+
+The tests apply pending migrations to this test database. The HTTP database test deletes its inserted simulation, and the Infrastructure repository test rolls back its transaction.
+
+Run all automated tests with the dedicated connection configured from `.env`:
+
+```bash
+set -a
+source .env
+set +a
+export SINGULARFLOW_TEST_CONNECTION_STRING="Host=${POSTGRES_BIND_ADDRESS:-127.0.0.1};Port=${POSTGRES_PORT:-5432};Database=singular_flow_tests;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
 dotnet test SingularFlow.slnx
 ```
 
@@ -1118,16 +1161,16 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 66 automated tests distributed across:
+The solution currently contains 70 automated tests distributed across:
 
 * 42 Domain unit tests.
-* 5 Application unit tests.
-* 8 API integration tests.
-* 11 Infrastructure model and design-time tests.
+* 6 Application unit tests.
+* 10 API tests.
+* 12 Infrastructure tests.
 
-The eight API tests cover health, OpenAPI, valid logarithmic and uniform requests, unsupported sampling mode, invalid concentration exponent, missing sampling mode, and malformed JSON. They exercise the ASP.NET Core HTTP pipeline through `WebApplicationFactory<Program>`.
+The API tests cover health, OpenAPI, valid logarithmic and uniform requests, unsupported sampling mode, invalid concentration exponent, missing sampling mode, malformed JSON, persistence delegation, and the real HTTP-to-PostgreSQL path. Contract and validation tests substitute a test repository.
 
-The Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. Schema application and PostgreSQL infrastructure verification are currently manual; there are no database-backed integration tests yet.
+Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration test connects to the dedicated test database and verifies the persisted simulation and ordered states.
 
 ## Code formatting
 
@@ -1151,12 +1194,13 @@ GitHub Actions validates every pull request targeting `main` and every push to `
 
 The workflow performs the following steps:
 
-1. Check out the repository.
-2. Install the .NET SDK declared in `global.json`.
-3. Restore dependencies.
-4. Verify code formatting.
-5. Build the solution in Release mode.
-6. Run all automated tests.
+1. Start a temporary PostgreSQL service with a dedicated `singular_flow_tests` database.
+2. Check out the repository.
+3. Install the .NET SDK declared in `global.json`.
+4. Restore dependencies.
+5. Verify code formatting.
+6. Build the solution in Release mode.
+7. Run all automated tests with `SINGULARFLOW_TEST_CONNECTION_STRING` configured from the service's assigned host port.
 
 The `main` branch is protected by a GitHub ruleset. Changes are integrated through pull requests after the required continuous-integration check succeeds.
 
@@ -1228,7 +1272,7 @@ The project is developed incrementally.
 * [x] Introduce structured simulation request and result objects.
 * [x] Move sampling-mode selection out of the CLI.
 * [x] Add automated application tests.
-* [ ] Add cancellation support when asynchronous execution is introduced.
+* [x] Add cancellation support to asynchronous persistence.
 * [ ] Introduce additional use cases when required by the Web API.
 
 ### Phase 4 — Web API
@@ -1252,10 +1296,10 @@ The project is developed incrementally.
 * [x] Add a DbContext, separate persistence entities, and relational mappings.
 * [x] Add the initial persistence migration.
 * [x] Add automated EF Core model metadata tests.
-* [ ] Register Infrastructure and the database context in the API at runtime.
-* [ ] Introduce an application persistence abstraction and repository implementation.
-* [ ] Save simulation executions and calculated states.
-* [ ] Add database-backed persistence integration tests.
+* [x] Register Infrastructure and the database context in the API at runtime.
+* [x] Introduce an application persistence abstraction and repository implementation.
+* [x] Save simulation executions and calculated states.
+* [x] Add database-backed persistence integration tests.
 
 ### Phase 6 — Background processing
 

@@ -8,12 +8,12 @@ using Microsoft.AspNetCore.Mvc.Testing;
 namespace SingularFlow.Api.Tests.Simulations;
 
 public sealed class SimulationModelBindingTests :
-    IClassFixture<WebApplicationFactory<Program>>
+    IClassFixture<SimulationEndpointFactory>
 {
     private readonly HttpClient _client;
 
     public SimulationModelBindingTests(
-        WebApplicationFactory<Program> factory)
+        SimulationEndpointFactory factory)
     {
         WebApplicationFactoryClientOptions options = new()
         {
