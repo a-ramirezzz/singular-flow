@@ -9,10 +9,10 @@ namespace SingularFlow.Api.Controllers;
 [Route("api/simulations")]
 public sealed class SimulationsController : ControllerBase
 {
-    private readonly RunSimulationHandler _handler;
+    private readonly RunAndSaveSimulationHandler _handler;
 
     public SimulationsController(
-        RunSimulationHandler handler)
+        RunAndSaveSimulationHandler handler)
     {
         _handler = handler;
     }
@@ -24,14 +24,17 @@ public sealed class SimulationsController : ControllerBase
     [ProducesResponseType(
         typeof(ProblemDetails),
         StatusCodes.Status400BadRequest)]
-    public ActionResult<RunSimulationApiResponse> Run(
-        RunSimulationApiRequest request)
+    public async Task<ActionResult<RunSimulationApiResponse>> Run(
+    RunSimulationApiRequest request,
+    CancellationToken cancellationToken)
     {
         RunSimulationRequest applicationRequest =
             SimulationContractMapper.ToApplication(request);
 
         RunSimulationResult applicationResult =
-            _handler.Handle(applicationRequest);
+            await _handler.HandleAsync(
+                applicationRequest,
+                cancellationToken);
 
         RunSimulationApiResponse response =
             SimulationContractMapper.ToApi(

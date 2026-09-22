@@ -8,10 +8,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SingularFlow.Application\SingularFlow.Application.csproj" />
+    <ProjectReference Include="..\SingularFlow.Infrastructure\SingularFlow.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>
