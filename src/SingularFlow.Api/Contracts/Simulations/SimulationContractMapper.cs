@@ -21,9 +21,12 @@ internal static class SimulationContractMapper
     }
 
     public static RunSimulationApiResponse ToApi(
-        RunSimulationResult result)
+        PersistedSimulationResult persisted)
     {
-        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(persisted);
+
+        RunSimulationResult result =
+            persisted.Simulation;
 
         SimulationStateResponse[] states = result.States
             .Select(state => new SimulationStateResponse(
@@ -42,6 +45,8 @@ internal static class SimulationContractMapper
             .ToArray();
 
         return new RunSimulationApiResponse(
+            Id: persisted.Id,
+            CreatedAtUtc: persisted.CreatedAtUtc,
             SingularTime:
                 result.BlowupParameters.SingularTime,
             ConcentrationExponent:

@@ -9,30 +9,64 @@ namespace SingularFlow.Api.Controllers;
 [Route("api/simulations")]
 public sealed class SimulationsController : ControllerBase
 {
-    private readonly RunAndSaveSimulationHandler _handler;
+    private readonly RunAndSaveSimulationHandler _runHandler;
+    private readonly GetSimulationHandler _getHandler;
 
     public SimulationsController(
-        RunAndSaveSimulationHandler handler)
+        RunAndSaveSimulationHandler runHandler,
+        GetSimulationHandler getHandler)
     {
-        _handler = handler;
+        _runHandler = runHandler;
+        _getHandler = getHandler;
     }
 
-    [HttpPost]
+    [HttpGet(
+        "{id:guid}",
+        Name = nameof(GetById))]
     [ProducesResponseType(
         typeof(RunSimulationApiResponse),
         StatusCodes.Status200OK)]
     [ProducesResponseType(
         typeof(ProblemDetails),
+        StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<RunSimulationApiResponse>>
+        GetById(
+            Guid id,
+            CancellationToken cancellationToken)
+    {
+        PersistedSimulationResult? result =
+            await _getHandler.HandleAsync(
+                id,
+                cancellationToken);
+
+        if (result is null)
+        {
+            return NotFound();
+        }
+
+        RunSimulationApiResponse response =
+            SimulationContractMapper.ToApi(
+                result);
+
+        return Ok(response);
+    }
+
+    [HttpPost]
+    [ProducesResponseType(
+        typeof(RunSimulationApiResponse),
+        StatusCodes.Status201Created)]
+    [ProducesResponseType(
+        typeof(ProblemDetails),
         StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<RunSimulationApiResponse>> Run(
-    RunSimulationApiRequest request,
-    CancellationToken cancellationToken)
+        RunSimulationApiRequest request,
+        CancellationToken cancellationToken)
     {
         RunSimulationRequest applicationRequest =
             SimulationContractMapper.ToApplication(request);
 
-        RunSimulationResult applicationResult =
-            await _handler.HandleAsync(
+        PersistedSimulationResult applicationResult =
+            await _runHandler.HandleAsync(
                 applicationRequest,
                 cancellationToken);
 
@@ -40,6 +74,12 @@ public sealed class SimulationsController : ControllerBase
             SimulationContractMapper.ToApi(
                 applicationResult);
 
-        return Ok(response);
+        return CreatedAtRoute(
+            routeName: nameof(GetById),
+            routeValues: new
+            {
+                id = response.Id
+            },
+            value: response);
     }
 }

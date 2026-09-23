@@ -41,7 +41,7 @@ public sealed class SimulationEndpointTests :
                 request);
 
         Assert.Equal(
-            HttpStatusCode.OK,
+            HttpStatusCode.Created,
             response.StatusCode);
 
         await using Stream contentStream =
@@ -109,7 +109,7 @@ public sealed class SimulationEndpointTests :
                 request);
 
         Assert.Equal(
-            HttpStatusCode.OK,
+            HttpStatusCode.Created,
             response.StatusCode);
 
         await using Stream contentStream =
