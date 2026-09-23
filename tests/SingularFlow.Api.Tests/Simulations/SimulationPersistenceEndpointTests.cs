@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -13,6 +14,7 @@ namespace SingularFlow.Api.Tests.Simulations;
 public sealed class SimulationPersistenceEndpointTests
 {
     [Fact]
+
     public async Task PostSimulation_ValidRequest_SavesCalculatedStates()
     {
         RecordingSimulationRepository repository = new();
@@ -52,7 +54,30 @@ public sealed class SimulationPersistenceEndpointTests
                 "/api/simulations",
                 request);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+    HttpStatusCode.Created,
+    response.StatusCode);
+
+        Assert.Equal(
+            $"/api/simulations/{PersistedId}",
+            response.Headers.Location?.AbsolutePath);
+
+        await using Stream contentStream =
+            await response.Content.ReadAsStreamAsync();
+
+        using JsonDocument document =
+            await JsonDocument.ParseAsync(contentStream);
+
+        JsonElement root = document.RootElement;
+
+        Assert.Equal(
+            PersistedId,
+            root.GetProperty("id").GetGuid());
+
+        Assert.Equal(
+            PersistedCreatedAtUtc,
+            root.GetProperty("createdAtUtc")
+                .GetDateTimeOffset());
 
         RunSimulationResult saved =
             Assert.IsType<RunSimulationResult>(
@@ -66,17 +91,44 @@ public sealed class SimulationPersistenceEndpointTests
             precision: 10);
     }
 
+    private static readonly Guid PersistedId =
+        Guid.Parse(
+            "89e58894-f2ab-4528-8030-75c727887611");
+
+    private static readonly DateTimeOffset PersistedCreatedAtUtc =
+        new(
+            2026,
+            9,
+            23,
+            12,
+            0,
+            0,
+            TimeSpan.Zero);
+
     private sealed class RecordingSimulationRepository :
         ISimulationRepository
     {
         public RunSimulationResult? SavedResult { get; private set; }
 
-        public Task SaveAsync(
+        public Task<PersistedSimulationResult> SaveAsync(
             RunSimulationResult result,
             CancellationToken cancellationToken)
         {
             SavedResult = result;
-            return Task.CompletedTask;
+
+            PersistedSimulationResult persisted = new(
+                Id: PersistedId,
+                CreatedAtUtc: PersistedCreatedAtUtc,
+                Simulation: result);
+
+            return Task.FromResult(persisted);
+        }
+
+        public Task<PersistedSimulationResult?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 }

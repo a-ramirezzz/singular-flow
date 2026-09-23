@@ -4,8 +4,22 @@ namespace SingularFlow.Application.Tests.Simulations;
 
 public sealed class RunAndSaveSimulationHandlerTests
 {
+    private static readonly Guid PersistedId =
+        Guid.Parse(
+            "89e58894-f2ab-4528-8030-75c727887611");
+
+    private static readonly DateTimeOffset PersistedAt =
+        new(
+            year: 2026,
+            month: 9,
+            day: 23,
+            hour: 12,
+            minute: 0,
+            second: 0,
+            offset: TimeSpan.Zero);
+
     [Fact]
-    public async Task HandleAsync_ValidRequest_SavesAndReturnsCalculatedSeries()
+    public async Task HandleAsync_ValidRequest_SavesAndReturnsPersistedSimulation()
     {
         RecordingSimulationRepository repository = new();
 
@@ -21,16 +35,31 @@ public sealed class RunAndSaveSimulationHandlerTests
             SampleCount: 3,
             SamplingMode: SamplingMode.Uniform);
 
-        RunSimulationResult result =
+        PersistedSimulationResult persisted =
             await handler.HandleAsync(
                 request,
                 CancellationToken.None);
 
-        Assert.Same(result, repository.SavedResult);
-        Assert.Equal(3, result.States.Count);
-        Assert.Equal(0.0, result.States[0].Time);
-        Assert.Equal(0.4, result.States[1].Time, precision: 10);
-        Assert.Equal(0.8, result.States[2].Time, precision: 10);
+        Assert.Equal(PersistedId, persisted.Id);
+        Assert.Equal(PersistedAt, persisted.CreatedAtUtc);
+        Assert.Same(
+            repository.SavedResult,
+            persisted.Simulation);
+
+        Assert.Equal(3, persisted.Simulation.States.Count);
+        Assert.Equal(
+            0.0,
+            persisted.Simulation.States[0].Time);
+
+        Assert.Equal(
+            0.4,
+            persisted.Simulation.States[1].Time,
+            precision: 10);
+
+        Assert.Equal(
+            0.8,
+            persisted.Simulation.States[2].Time,
+            precision: 10);
     }
 
     private sealed class RecordingSimulationRepository :
@@ -38,12 +67,25 @@ public sealed class RunAndSaveSimulationHandlerTests
     {
         public RunSimulationResult? SavedResult { get; private set; }
 
-        public Task SaveAsync(
+        public Task<PersistedSimulationResult> SaveAsync(
             RunSimulationResult result,
             CancellationToken cancellationToken)
         {
             SavedResult = result;
-            return Task.CompletedTask;
+
+            PersistedSimulationResult persisted = new(
+                Id: PersistedId,
+                CreatedAtUtc: PersistedAt,
+                Simulation: result);
+
+            return Task.FromResult(persisted);
+        }
+
+        public Task<PersistedSimulationResult?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
         }
     }
 }

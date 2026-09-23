@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -86,8 +87,85 @@ public sealed class SimulationDatabaseEndpointTests
                     request);
 
             Assert.Equal(
+             HttpStatusCode.Created,
+             response.StatusCode);
+
+            Uri location =
+    Assert.IsType<Uri>(
+        response.Headers.Location);
+
+            await using Stream postContent =
+                await response.Content.ReadAsStreamAsync();
+
+            using JsonDocument postDocument =
+                await JsonDocument.ParseAsync(
+                    postContent);
+
+            Guid simulationId =
+                postDocument.RootElement
+                    .GetProperty("id")
+                    .GetGuid();
+
+            Assert.Equal(
+                $"/api/simulations/{simulationId}",
+                location.AbsolutePath);
+
+            using HttpResponseMessage getResponse =
+                await client.GetAsync(location);
+
+            Assert.Equal(
                 HttpStatusCode.OK,
-                response.StatusCode);
+                getResponse.StatusCode);
+
+            await using Stream getContent =
+                await getResponse.Content
+                    .ReadAsStreamAsync();
+
+            using JsonDocument getDocument =
+                await JsonDocument.ParseAsync(
+                    getContent);
+
+            JsonElement retrieved =
+                getDocument.RootElement;
+
+            Assert.Equal(
+                simulationId,
+                retrieved.GetProperty("id").GetGuid());
+
+            Assert.Equal(
+                singularTime,
+                retrieved.GetProperty(
+                    "singularTime").GetDouble());
+
+            Assert.Equal(
+                4,
+                retrieved.GetProperty(
+                    "sampleCount").GetInt32());
+
+            Assert.Equal(
+                "uniform",
+                retrieved.GetProperty(
+                    "samplingMode").GetString());
+
+            JsonElement retrievedStates =
+                retrieved.GetProperty("states");
+
+            Assert.Equal(
+                4,
+                retrievedStates.GetArrayLength());
+
+            Assert.Equal(
+                0.0,
+                retrievedStates[0]
+                    .GetProperty("time")
+                    .GetDouble());
+
+            Assert.Equal(
+                0.8,
+                retrievedStates[3]
+                    .GetProperty("time")
+                    .GetDouble(),
+                precision: 10);
 
             SimulationEntity saved =
                 await context.Simulations
@@ -97,8 +175,8 @@ public sealed class SimulationDatabaseEndpointTests
                             simulation.States)
                     .SingleAsync(
                         simulation =>
-                            simulation.SingularTime ==
-                            singularTime);
+                            simulation.Id ==
+                            simulationId);
 
             Assert.Equal(4, saved.SampleCount);
             Assert.NotEqual(default, saved.CreatedAtUtc);

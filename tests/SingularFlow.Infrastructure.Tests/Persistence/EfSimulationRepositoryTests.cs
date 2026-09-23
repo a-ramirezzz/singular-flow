@@ -52,15 +52,24 @@ public sealed class EfSimulationRepositoryTests
 
         EfSimulationRepository repository = new(context);
 
-        await repository.SaveAsync(
-            result,
-            CancellationToken.None);
+        PersistedSimulationResult persisted =
+            await repository.SaveAsync(
+                result,
+                CancellationToken.None);
 
-        Guid simulationId =
-            Assert.Single(
-                context.ChangeTracker
-                    .Entries<SimulationEntity>())
-                .Entity.Id;
+        Assert.NotEqual(
+            Guid.Empty,
+            persisted.Id);
+
+        Assert.NotEqual(
+            default,
+            persisted.CreatedAtUtc);
+
+        Assert.Same(
+            result,
+            persisted.Simulation);
+
+        Guid simulationId = persisted.Id;
 
         context.ChangeTracker.Clear();
 
@@ -77,6 +86,9 @@ public sealed class EfSimulationRepositoryTests
         Assert.Equal(3, saved.SampleCount);
         Assert.Equal(SamplingMode.Uniform, saved.SamplingMode);
         Assert.NotEqual(default, saved.CreatedAtUtc);
+        Assert.Equal(
+    persisted.CreatedAtUtc,
+    saved.CreatedAtUtc);
 
         SimulationStateEntity[] states =
             saved.States
@@ -97,6 +109,74 @@ public sealed class EfSimulationRepositoryTests
                 states[index].CoreEnergyScale);
         }
 
+        PersistedSimulationResult? retrieved =
+    await repository.GetByIdAsync(
+        persisted.Id,
+        CancellationToken.None);
+
+        Assert.NotNull(retrieved);
+
+        Assert.Equal(
+            persisted.Id,
+            retrieved.Id);
+
+        Assert.Equal(
+            persisted.CreatedAtUtc,
+            retrieved.CreatedAtUtc);
+
+        Assert.Equal(
+            result.BlowupParameters,
+            retrieved.Simulation.BlowupParameters);
+
+        Assert.Equal(
+            result.TimeSeriesParameters,
+            retrieved.Simulation.TimeSeriesParameters);
+
+        Assert.Equal(
+            result.SamplingMode,
+            retrieved.Simulation.SamplingMode);
+
+        Assert.Equal(
+            result.States.ToArray(),
+            retrieved.Simulation.States.ToArray());
+
         await transaction.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_MissingId_ReturnsNull()
+    {
+        string connectionString =
+            Environment.GetEnvironmentVariable(
+                "SINGULARFLOW_TEST_CONNECTION_STRING")
+            ?? throw new InvalidOperationException(
+                "Set SINGULARFLOW_TEST_CONNECTION_STRING.");
+
+        NpgsqlConnectionStringBuilder connection = new(
+            connectionString);
+
+        Assert.Equal(
+            "singular_flow_tests",
+            connection.Database);
+
+        DbContextOptions<SingularFlowDbContext> options =
+            new DbContextOptionsBuilder<SingularFlowDbContext>()
+                .UseNpgsql(connectionString)
+                .Options;
+
+        await using SingularFlowDbContext context =
+            new(options);
+
+        await context.Database.MigrateAsync();
+
+        EfSimulationRepository repository = new(
+            context);
+
+        PersistedSimulationResult? result =
+            await repository.GetByIdAsync(
+                Guid.NewGuid(),
+                CancellationToken.None);
+
+        Assert.Null(result);
     }
 }

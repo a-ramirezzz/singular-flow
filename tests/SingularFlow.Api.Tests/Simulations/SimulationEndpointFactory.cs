@@ -27,11 +27,32 @@ public sealed class SimulationEndpointFactory :
     private sealed class NoOpSimulationRepository :
         ISimulationRepository
     {
-        public Task SaveAsync(
+        public Task<PersistedSimulationResult> SaveAsync(
             RunSimulationResult result,
             CancellationToken cancellationToken)
         {
-            return Task.CompletedTask;
+            PersistedSimulationResult persisted = new(
+                Id: Guid.Parse(
+                    "89e58894-f2ab-4528-8030-75c727887611"),
+                CreatedAtUtc: new DateTimeOffset(
+                    2026,
+                    9,
+                    23,
+                    12,
+                    0,
+                    0,
+                    TimeSpan.Zero),
+                Simulation: result);
+
+            return Task.FromResult(persisted);
+        }
+
+        public Task<PersistedSimulationResult?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<
+                PersistedSimulationResult?>(null);
         }
     }
 }

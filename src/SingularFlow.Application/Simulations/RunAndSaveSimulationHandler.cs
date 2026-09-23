@@ -13,17 +13,18 @@ public sealed class RunAndSaveSimulationHandler
         _repository = repository;
     }
 
-    public async Task<RunSimulationResult> HandleAsync(
-        RunSimulationRequest request,
-        CancellationToken cancellationToken)
+    public async Task<PersistedSimulationResult> HandleAsync(
+    RunSimulationRequest request,
+    CancellationToken cancellationToken)
     {
         RunSimulationResult result =
             _simulationHandler.Handle(request);
 
-        await _repository.SaveAsync(
-            result,
-            cancellationToken);
+        PersistedSimulationResult persisted =
+            await _repository.SaveAsync(
+                result,
+                cancellationToken);
 
-        return result;
+        return persisted;
     }
 }

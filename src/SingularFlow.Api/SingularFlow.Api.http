@@ -1,4 +1,5 @@
 @SingularFlow.Api_HostAddress = http://localhost:5278
+@SimulationId = replace-with-a-simulation-id
 
 ### Health check
 
@@ -63,3 +64,8 @@ Accept: application/problem+json
 
 {
   "singularTime": 1.0,
+
+### Get a persisted simulation
+
+GET {{SingularFlow.Api_HostAddress}}/api/simulations/{{SimulationId}}
+Accept: application/json
