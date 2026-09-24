@@ -65,6 +65,11 @@ Accept: application/problem+json
 {
   "singularTime": 1.0,
 
+### List persisted simulations
+
+GET {{SingularFlow.Api_HostAddress}}/api/simulations?page=1&pageSize=20
+Accept: application/json
+
 ### Get a persisted simulation
 
 GET {{SingularFlow.Api_HostAddress}}/api/simulations/{{SimulationId}}

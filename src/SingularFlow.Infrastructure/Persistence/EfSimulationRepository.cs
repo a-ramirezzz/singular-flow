@@ -76,6 +76,62 @@ public sealed class EfSimulationRepository : ISimulationRepository
             Simulation: result);
     }
 
+    public async Task<PagedSimulationResult> ListAsync(
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        IQueryable<SimulationEntity> query =
+            _context.Simulations
+                .AsNoTracking();
+
+        int totalCount =
+            await query.CountAsync(
+                cancellationToken);
+
+        long offset =
+            ((long)page - 1) * pageSize;
+
+        SimulationSummaryResult[] items;
+
+        if (offset >= totalCount)
+        {
+            items =
+                Array.Empty<SimulationSummaryResult>();
+        }
+        else
+        {
+            items =
+                await query
+                    .OrderByDescending(
+                        simulation =>
+                            simulation.CreatedAtUtc)
+                    .ThenByDescending(
+                        simulation =>
+                            simulation.Id)
+                    .Skip((int)offset)
+                    .Take(pageSize)
+                    .Select(simulation =>
+                        new SimulationSummaryResult(
+                            simulation.Id,
+                            simulation.CreatedAtUtc,
+                            simulation.SingularTime,
+                            simulation.ConcentrationExponent,
+                            simulation.StartTime,
+                            simulation.EndTime,
+                            simulation.SampleCount,
+                            simulation.SamplingMode))
+                    .ToArrayAsync(
+                        cancellationToken);
+        }
+
+        return new PagedSimulationResult(
+            Items: items,
+            Page: page,
+            PageSize: pageSize,
+            TotalCount: totalCount);
+    }
+
     public async Task<PersistedSimulationResult?> GetByIdAsync(
         Guid id,
         CancellationToken cancellationToken)
@@ -132,5 +188,6 @@ public sealed class EfSimulationRepository : ISimulationRepository
             Id: simulation.Id,
             CreatedAtUtc: simulation.CreatedAtUtc,
             Simulation: result);
+
     }
 }

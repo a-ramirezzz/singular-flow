@@ -167,6 +167,64 @@ public sealed class SimulationDatabaseEndpointTests
                     .GetDouble(),
                 precision: 10);
 
+            using HttpResponseMessage listResponse =
+    await client.GetAsync(
+        "/api/simulations?page=1&pageSize=100");
+
+            Assert.Equal(
+                HttpStatusCode.OK,
+                listResponse.StatusCode);
+
+            await using Stream listContent =
+                await listResponse.Content
+                    .ReadAsStreamAsync();
+
+            using JsonDocument listDocument =
+                await JsonDocument.ParseAsync(
+                    listContent);
+
+            JsonElement listRoot =
+                listDocument.RootElement;
+
+            Assert.Equal(
+                1,
+                listRoot.GetProperty("page")
+                    .GetInt32());
+
+            Assert.Equal(
+                100,
+                listRoot.GetProperty("pageSize")
+                    .GetInt32());
+
+            Assert.True(
+                listRoot.GetProperty("totalCount")
+                    .GetInt32() >= 1);
+
+            JsonElement listedSimulation =
+                listRoot.GetProperty("items")
+                    .EnumerateArray()
+                    .Single(item =>
+                        item.GetProperty("id")
+                            .GetGuid() ==
+                        simulationId);
+
+            Assert.Equal(
+                singularTime,
+                listedSimulation
+                    .GetProperty("singularTime")
+                    .GetDouble());
+
+            Assert.Equal(
+                4,
+                listedSimulation
+                    .GetProperty("sampleCount")
+                    .GetInt32());
+
+            Assert.False(
+                listedSimulation.TryGetProperty(
+                    "states",
+                    out _));
+
             SimulationEntity saved =
                 await context.Simulations
                     .AsNoTracking()

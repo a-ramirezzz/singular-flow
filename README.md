@@ -18,7 +18,7 @@ The ASP.NET Core Web API executes simulations over HTTP with uniform or logarith
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-Local PostgreSQL 18.6 infrastructure is available through Docker Compose. `SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The API connects to PostgreSQL through Npgsql and persists each simulation and its ordered states before returning `201 Created` with the database-generated `id` and `createdAtUtc`. The `Location` header identifies the GET endpoint, which retrieves persisted simulations by ID.
+Local PostgreSQL 18.6 infrastructure is available through Docker Compose. `SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The API connects to PostgreSQL through Npgsql and persists each simulation and its ordered states before returning `201 Created` with the database-generated `id` and `createdAtUtc`. The `Location` header identifies the GET-by-ID endpoint, while a separate paginated collection endpoint lists persisted simulations.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -45,7 +45,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, API, and Infrastructure behavior with 75 automated tests: 42 Domain, 8 Application, 12 API, and 13 Infrastructure tests.
+* Verify domain, application, API, and Infrastructure behavior with 86 automated tests: 42 Domain, 12 Application, 18 API, and 14 Infrastructure tests.
 * Validate every pull request and push to `main` with GitHub Actions.
 * Host an ASP.NET Core Web API.
 * Expose an operational health-check endpoint.
@@ -55,16 +55,20 @@ The project is being developed incrementally with Domain and Application unit te
 * Persist each API simulation and its ordered states to PostgreSQL before returning the calculated series.
 * Return `201 Created` with the persisted `id`, database-generated `createdAtUtc`, and a `Location` header.
 * Retrieve persisted simulations through `GET /api/simulations/{id}` and return `404 Not Found` for an unknown ID.
+* List persisted simulations through `GET /api/simulations` with optional `page` and `pageSize` parameters, defaults of `1` and `20`, and a maximum page size of `100`.
+* Return lightweight simulation summaries in stable newest-first order with `page`, `pageSize`, `totalCount`, and `totalPages` metadata, without returning state collections.
+* Return `400 Bad Request` with `ProblemDetails` when pagination values fall outside their accepted ranges.
 * Map dedicated API contracts to Application requests and results, and return structured JSON states.
 * Return `400 Bad Request` with `ProblemDetails` for invalid simulation parameters and `ValidationProblemDetails` for model-binding or malformed-JSON failures.
-* Document the POST operation with `201` and `400` responses and the GET operation with `200` and `404` responses through OpenAPI.
+* Document collection GET with pagination parameters and `200` and `400` responses, POST with `201` and `400`, and GET by ID with `200` and `404` through OpenAPI.
 * Provide reusable HTTP requests in `SingularFlow.Api.http`.
 * Start PostgreSQL locally with Docker Compose and check the database container's health.
 * Persist local database data through a named Docker volume.
 * Keep local database credentials outside version control.
 * Model simulations and their generated states with EF Core persistence entities, PostgreSQL mappings, constraints, indexes, and a tracked initial migration.
 * Keep the Application persistence contracts and orchestration independent of EF Core.
-* Verify the complete HTTP-to-PostgreSQL POST-then-GET path with a dedicated database integration test.
+* Project collection summaries directly from PostgreSQL without loading `simulation_states` rows.
+* Verify the complete HTTP-to-PostgreSQL POST, GET-by-ID, and collection-listing path with a dedicated database integration test.
 * Create the EF Core context at design time without storing a database password in the repository.
 
 ## Mathematical model
@@ -334,10 +338,12 @@ singular-flow/
 │   ├── SingularFlow.Api/
 │   │   ├── Contracts/
 │   │   │   └── Simulations/
+│   │   │       ├── PagedSimulationsResponse.cs
 │   │   │       ├── RunSimulationApiRequest.cs
 │   │   │       ├── RunSimulationApiResponse.cs
 │   │   │       ├── SimulationContractMapper.cs
-│   │   │       └── SimulationStateResponse.cs
+│   │   │       ├── SimulationStateResponse.cs
+│   │   │       └── SimulationSummaryResponse.cs
 │   │   ├── Controllers/
 │   │   │   └── SimulationsController.cs
 │   │   ├── ErrorHandling/
@@ -353,12 +359,15 @@ singular-flow/
 │   │   ├── Simulations/
 │   │   │   ├── GetSimulationHandler.cs
 │   │   │   ├── ISimulationRepository.cs
+│   │   │   ├── ListSimulationsHandler.cs
+│   │   │   ├── PagedSimulationResult.cs
 │   │   │   ├── PersistedSimulationResult.cs
 │   │   │   ├── RunAndSaveSimulationHandler.cs
 │   │   │   ├── RunSimulationHandler.cs
 │   │   │   ├── RunSimulationRequest.cs
 │   │   │   ├── RunSimulationResult.cs
-│   │   │   └── SamplingMode.cs
+│   │   │   ├── SamplingMode.cs
+│   │   │   └── SimulationSummaryResult.cs
 │   │   └── SingularFlow.Application.csproj
 │   ├── SingularFlow.Cli/
 │   │   ├── Program.cs
@@ -398,6 +407,7 @@ singular-flow/
 │   │   │   ├── SimulationDatabaseEndpointTests.cs
 │   │   │   ├── SimulationEndpointTests.cs
 │   │   │   ├── SimulationEndpointFactory.cs
+│   │   │   ├── SimulationListingEndpointTests.cs
 │   │   │   ├── SimulationModelBindingTests.cs
 │   │   │   ├── SimulationPersistenceEndpointTests.cs
 │   │   │   ├── SimulationQueryEndpointTests.cs
@@ -406,6 +416,7 @@ singular-flow/
 │   ├── SingularFlow.Application.Tests/
 │   │   ├── Simulations/
 │   │   │   ├── GetSimulationHandlerTests.cs
+│   │   │   ├── ListSimulationsHandlerTests.cs
 │   │   │   ├── RunAndSaveSimulationHandlerTests.cs
 │   │   │   └── RunSimulationHandlerTests.cs
 │   │   └── SingularFlow.Application.Tests.csproj
@@ -470,7 +481,7 @@ Current responsibilities include:
 * Starting and configuring the web application.
 * Receiving HTTP simulation requests through an MVC controller.
 * Mapping API contracts to Application requests and Application results to HTTP response contracts.
-* Executing `RunAndSaveSimulationHandler` and `GetSimulationHandler` through dependency injection and returning persisted simulations as JSON.
+* Executing `RunAndSaveSimulationHandler`, `GetSimulationHandler`, and `ListSimulationsHandler` through dependency injection and returning persisted simulations as JSON.
 * Registering `SingularFlowDbContext` with Npgsql from `ConnectionStrings:SingularFlow`.
 * Binding `ISimulationRepository` to `EfSimulationRepository`.
 * Producing standardized HTTP errors for invalid requests.
@@ -500,6 +511,8 @@ Responsibilities include:
 * Coordinating calculation and awaited persistence through `RunAndSaveSimulationHandler`.
 * Returning generated persistence identity through `PersistedSimulationResult`.
 * Retrieving nullable persisted results through `GetSimulationHandler` and the repository abstraction.
+* Validating pagination boundaries and delegating valid collection queries through `ListSimulationsHandler` and the repository abstraction.
+* Returning `PagedSimulationResult` metadata and collection-specific `SimulationSummaryResult` items without state collections.
 * Returning structured simulation results.
 * Preventing presentation concerns from entering the domain layer.
 
@@ -522,11 +535,13 @@ Responsibilities include:
 * Returning the generated simulation ID and database-generated creation timestamp after saving.
 * Querying simulations by persisted ID with `AsNoTracking()` and loading their related states.
 * Reconstructing Application and Domain results with states ordered by `Sequence`, or returning `null` when the ID does not exist.
+* Listing simulations with a separate count query and an `AsNoTracking` summary projection ordered by creation time and ID in descending order.
+* Applying offset pagination without including or loading related state rows.
 * Providing design-time context creation without a stored password.
 
 Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. EF Core remains confined to Infrastructure and the API composition root; Application and Domain do not depend on it.
 
-The persisted query feature uses the existing schema and does not require a new migration.
+The persisted query features use the existing schema and do not require a new migration.
 
 ### SingularFlow.Cli
 
@@ -573,7 +588,7 @@ The test project depends directly on `SingularFlow.Domain`.
 
 Contains automated tests for application use-case behavior.
 
-The eight application tests verify:
+The twelve application tests verify:
 
 * Rejection of a null simulation request.
 * Execution with uniform sampling.
@@ -585,6 +600,9 @@ The eight application tests verify:
 * Production of structured simulation results.
 * Delegation of calculated results to the repository and return of the persisted identity and creation timestamp.
 * Delegation of existing and missing simulation queries through the repository abstraction.
+* Delegation of valid collection pagination through the repository abstraction.
+* Rejection of page numbers below `1` and page sizes outside `1` through `100`.
+* Computation of total pages from the total count and page size.
 
 The test project depends directly on `SingularFlow.Application`.
 
@@ -592,16 +610,17 @@ The test project depends directly on `SingularFlow.Application`.
 
 Contains integration tests for the ASP.NET Core host, including one database-backed end-to-end test.
 
-The twelve API tests verify:
+The eighteen API tests verify:
 
 * `GET /health` returns `200 OK` and `Healthy`.
-* The Development OpenAPI document contains the API metadata and simulation operation.
+* The Development OpenAPI document contains the API metadata, collection pagination parameters, and documented simulation operations and responses.
 * Valid logarithmic and uniform simulation requests return `201 Created`, resource identity, creation timestamp, and a resource location.
 * Unsupported sampling modes and invalid concentration exponents return `400 ProblemDetails`.
 * Missing sampling modes and malformed JSON return `400 ValidationProblemDetails`.
 * The persistence abstraction receives the calculated simulation before a successful response is returned.
 * Existing resource queries return the persisted representation and missing queries return `404 Not Found`.
-* The actual HTTP-to-PostgreSQL path creates a simulation, follows its `Location`, retrieves its configuration and ordered states, and removes the database record afterward.
+* Collection queries return summary fields and pagination metadata, use default query values, omit states, and reject invalid pagination with `400 Bad Request`.
+* The actual HTTP-to-PostgreSQL path creates a simulation, follows its `Location`, retrieves its configuration and ordered states, lists its summary, and removes the database record afterward.
 
 The contract and validation tests use `WebApplicationFactory<Program>` with a test repository, so they execute the real HTTP pipeline without requiring PostgreSQL. The dedicated database endpoint test retains the production repository, applies pending migrations, and deletes its inserted simulation afterward.
 
@@ -609,9 +628,9 @@ The test project depends directly on `SingularFlow.Api`.
 
 ### SingularFlow.Infrastructure.Tests
 
-Contains 13 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
+Contains 14 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
 
-The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. The database test applies pending migrations and rolls back its transaction.
+The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. Repository integration tests also verify total count, page metadata, stable descending ordering, first and later pages, summary projection, and an out-of-range page with empty items and the original total count. The database tests apply pending migrations and use reversible transactions for inserted repository data.
 
 The test project depends directly on `SingularFlow.Infrastructure`.
 
@@ -749,7 +768,11 @@ The handler:
 * Executes the domain series generator.
 * Returns a `RunSimulationResult`.
 
-`RunAndSaveSimulationHandler` decorates that calculation use case with persistence. It awaits `ISimulationRepository.SaveAsync` and returns a `PersistedSimulationResult` containing the generated identity, database creation timestamp, and simulation result. `ISimulationRepository.GetByIdAsync` returns a nullable persisted result, and `GetSimulationHandler` delegates retrieval through that abstraction. These types belong to Application, so orchestration remains independent of EF Core and PostgreSQL.
+`RunAndSaveSimulationHandler` decorates that calculation use case with persistence. It awaits `ISimulationRepository.SaveAsync` and returns a `PersistedSimulationResult` containing the generated identity, database creation timestamp, and simulation result. `ISimulationRepository.GetByIdAsync` returns a nullable persisted result, and `GetSimulationHandler` delegates retrieval through that abstraction.
+
+`ListSimulationsHandler` rejects page numbers below `1` and page sizes outside `1` through `100`, then delegates valid requests to `ISimulationRepository.ListAsync`. `PagedSimulationResult` carries the items, requested page, page size, total count, and computed total pages. Its `SimulationSummaryResult` items form a collection-specific read model that intentionally excludes calculated states. These types belong to Application, so orchestration and collection models remain independent of EF Core and PostgreSQL.
+
+POST calculates and persists a simulation, GET by ID returns its detailed persisted representation, and collection GET returns lightweight persisted summaries.
 
 ### Structured request and result objects
 
@@ -790,19 +813,19 @@ It hosts the simulation controller alongside the health and Development OpenAPI 
 
 ### Dedicated HTTP contracts
 
-`RunSimulationApiRequest`, `RunSimulationApiResponse`, and `SimulationStateResponse` define the JSON boundary independently of Application and Domain models. HTTP representation can evolve without exposing mathematical domain types directly.
+`RunSimulationApiRequest`, `RunSimulationApiResponse`, `SimulationStateResponse`, `PagedSimulationsResponse`, and `SimulationSummaryResponse` define the JSON boundary independently of Application and Domain models. HTTP representation can evolve without exposing mathematical domain types directly.
 
 ### HTTP contract mapper
 
-`SimulationContractMapper` converts supported sampling strings to Application `SamplingMode` values and maps Application results to response contracts. Mathematical behavior remains in the Domain layer.
+`SimulationContractMapper` converts supported sampling strings to Application `SamplingMode` values and maps detailed and paged Application results to dedicated response contracts. Mathematical behavior remains in the Domain layer.
 
 ### Thin controller
 
-`SimulationsController` delegates creation to `RunAndSaveSimulationHandler` and retrieval to `GetSimulationHandler`, then maps Application results to API contracts. POST returns `201 Created`; a successful GET returns `200 OK`, and a missing result becomes `404 Not Found`. The controller contains no mathematical calculations or EF Core logic.
+`SimulationsController` delegates creation to `RunAndSaveSimulationHandler`, detailed retrieval to `GetSimulationHandler`, and optional collection query parameters to `ListSimulationsHandler`. It maps paged Application results to dedicated API contracts and returns `200 OK` for valid listings. Invalid pagination flows through the existing exception pipeline. POST returns `201 Created`; a successful GET by ID returns `200 OK`, and a missing resource becomes `404 Not Found`. The controller contains no mathematical calculations or EF Core query logic.
 
 ### Dependency injection
 
-`RunSimulationHandler`, `RunAndSaveSimulationHandler`, and `GetSimulationHandler` are registered with scoped lifetimes. The API registers `SingularFlowDbContext` with Npgsql, maps `ISimulationRepository` to `EfSimulationRepository`, and injects the handlers into `SimulationsController`.
+`RunSimulationHandler`, `RunAndSaveSimulationHandler`, `GetSimulationHandler`, and `ListSimulationsHandler` are registered with scoped lifetimes. The API registers `SingularFlowDbContext` with Npgsql, maps `ISimulationRepository` to `EfSimulationRepository`, and injects the handlers into `SimulationsController`.
 
 ### Global exception handling
 
@@ -814,7 +837,7 @@ It hosts the simulation controller alongside the health and Development OpenAPI 
 
 ### HTTP status choice
 
-POST creates a persisted simulation resource and returns `201 Created` with its representation. The response body contains the generated `id` and `createdAtUtc`, and `Location` identifies `GET /api/simulations/{id}`. GET returns `200 OK` when the resource exists and `404 Not Found` when it does not. Invalid POST input continues to return `400 Bad Request`.
+POST creates a persisted simulation resource and returns `201 Created` with its representation. The response body contains the generated `id` and `createdAtUtc`, and `Location` identifies `GET /api/simulations/{id}`. GET by ID returns `200 OK` when the resource exists and `404 Not Found` when it does not. Collection GET returns `200 OK`; an empty database has empty `items`, `totalCount` and `totalPages` of `0`, while a valid page beyond the available range retains its requested metadata and total count with empty `items`. Neither case is a `404`. Invalid POST input and invalid collection pagination return `400 Bad Request`.
 
 ### Operational health check
 
@@ -826,13 +849,19 @@ It returns `200 OK` with `Healthy` while all registered checks report a healthy 
 
 OpenAPI generation is enabled only in the Development environment and currently produces an OpenAPI 3.1.1 document.
 
-The document includes `POST /api/simulations` with `201` and `400` responses and `GET /api/simulations/{id}` with `200` and `404` responses. The infrastructure health endpoint is intentionally not included as a controller operation.
+The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, and `GET /api/simulations/{id}` with `200` and `404`. The infrastructure health endpoint is intentionally not included as a controller operation.
 
 ### In-memory API testing
 
 `SingularFlow.Api.Tests` uses `WebApplicationFactory<Program>`.
 
-This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server. Contract, validation, and query tests replace `ISimulationRepository` with test implementations; a separate test retains `EfSimulationRepository` to verify the actual HTTP-to-PostgreSQL POST-then-GET path and clean up the created record.
+This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server. Contract, validation, and query tests replace `ISimulationRepository` with test implementations; a separate test retains `EfSimulationRepository` to verify the actual HTTP-to-PostgreSQL creation, detailed retrieval, and collection listing path before cleaning up the created record.
+
+### Paginated summary projection
+
+`EfSimulationRepository.ListAsync` performs a read-only `AsNoTracking` query. It first uses `CountAsync` for collection metadata, calculates the offset with `long` arithmetic to avoid multiplication overflow for very large page numbers, and returns empty items without running the page query when the offset is beyond the total count.
+
+For a page that can contain data, EF Core generates a separate query ordered by `CreatedAtUtc` descending and then `Id` descending as a stable tie-breaker. The query applies offset pagination through `Skip` and `Take` and projects directly to `SimulationSummaryResult`. It does not call `Include`, materialize full persistence entities for the response, or load `simulation_states`. Collection summaries keep payloads bounded instead of returning every calculated state for every simulation. The existing `simulations` table and `created_at_utc` index are reused, so no new migration is required.
 
 ## Simulation API
 
@@ -895,6 +924,39 @@ Successful requests return `201 Created` with `application/json`. `Location` ide
 
 Each state reports its sample time, remaining time, and the six scales defined in the mathematical model. Before returning this response, the endpoint stores the simulation configuration and all states in sequence order.
 
+### List persisted simulations
+
+List persisted simulations with offset pagination:
+
+```http
+GET /api/simulations?page=1&pageSize=20
+```
+
+Both query parameters are optional and default to `page=1` and `pageSize=20`. `page` must be at least `1`; `pageSize` must be between `1` and `100`. Results are ordered by newest creation time first, with ID descending as a stable tie-breaker. Each item is a summary and intentionally omits `states`:
+
+```json
+{
+  "items": [
+    {
+      "id": "89e58894-f2ab-4528-8030-75c727887611",
+      "createdAtUtc": "2026-09-24T12:00:00+00:00",
+      "singularTime": 1.0,
+      "concentrationExponent": 0.005,
+      "startTime": 0.0,
+      "endTime": 0.8,
+      "sampleCount": 5,
+      "samplingMode": "uniform"
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "totalCount": 1,
+  "totalPages": 1
+}
+```
+
+A valid request returns `200 OK`. An empty database returns empty `items`, `totalCount = 0`, and `totalPages = 0`. A page beyond the available range also returns `200 OK` with empty `items`, the original `totalCount`, and the requested page metadata. Invalid pagination returns `400 Bad Request` with `application/problem+json`.
+
 Retrieve a persisted simulation using its returned `Location` or ID:
 
 ```http
@@ -929,7 +991,7 @@ The `detail` text can include parameter information. Missing required values and
 }
 ```
 
-Validation error keys and messages depend on the failed input. The Development OpenAPI document at `/openapi/v1.json` includes POST with `201` and `400` responses and GET by ID with `200` and `404` responses.
+Validation error keys and messages depend on the failed input. The Development OpenAPI document at `/openapi/v1.json` includes collection GET with `page` and `pageSize` parameters and `200` and `400` responses, POST with `201` and `400`, and GET by ID with `200` and `404`.
 
 ## Requirements
 
@@ -1015,7 +1077,7 @@ The following command is destructive to local database data because it removes t
 docker compose down --volumes
 ```
 
-The API requires PostgreSQL and an applied schema for both `POST /api/simulations` and `GET /api/simulations/{id}`. Startup registers the context but deliberately does not apply migrations automatically.
+The API requires PostgreSQL and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, and collection `GET /api/simulations`. Startup registers the context but deliberately does not apply migrations automatically. Collection listing reuses the existing `simulations` table and its `created_at_utc` index, so it requires no new migration.
 
 ## EF Core migrations and database schema
 
@@ -1143,6 +1205,15 @@ curl --include http://localhost:5278/api/simulations \
   --data '{"singularTime":1.0,"concentrationExponent":0.005,"startTime":0.0,"endTime":0.9999,"sampleCount":6,"samplingMode":"logarithmic"}'
 ```
 
+List persisted simulations:
+
+```bash
+curl --include \
+  "http://localhost:5278/api/simulations?page=1&pageSize=20"
+```
+
+Quote URLs containing query strings because `&` has shell meaning.
+
 Check an unsupported sampling mode (`400 Bad Request`):
 
 ```bash
@@ -1151,7 +1222,7 @@ curl --include http://localhost:5278/api/simulations \
   --data '{"singularTime":1.0,"concentrationExponent":0.005,"startTime":0.0,"endTime":0.9999,"sampleCount":6,"samplingMode":"adaptive"}'
 ```
 
-`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for health, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, and malformed JSON.
+`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for health, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, malformed JSON, and persisted simulation retrieval.
 
 ## Test
 
@@ -1189,16 +1260,16 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 75 automated tests distributed across:
+The solution currently contains 86 automated tests distributed across:
 
 * 42 Domain unit tests.
-* 8 Application unit tests.
-* 12 API tests.
-* 13 Infrastructure tests.
+* 12 Application unit tests.
+* 18 API tests.
+* 14 Infrastructure tests.
 
-The API tests cover health, OpenAPI, valid logarithmic and uniform requests, unsupported sampling mode, invalid concentration exponent, missing sampling mode, malformed JSON, persistence delegation, existing and missing resource queries, and the real POST-to-GET PostgreSQL path. Contract, validation, and query tests substitute a test repository; only the dedicated database endpoint test uses PostgreSQL and cleans up its created record.
+The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, and total-page calculation. The API tests cover health, OpenAPI operations, response codes and pagination parameter names, valid logarithmic and uniform requests, request failures, persistence delegation, existing and missing resource queries, default and explicit pagination, summary fields and metadata, omission of state collections, invalid pagination responses, and the real HTTP-to-PostgreSQL creation, detailed retrieval, and collection listing path. HTTP contract, validation, and query tests substitute a test repository; only the dedicated database endpoint test uses PostgreSQL and cleans up its created record.
 
-Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration tests connect to the dedicated test database and verify saving, querying, ordered state reconstruction, and a nullable result for a missing ID.
+Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration tests connect to the dedicated test database and verify saving, detailed querying, ordered state reconstruction, a nullable result for a missing ID, total count, offset pagination, stable newest-first ordering, summary projection, later pages, and out-of-range pages. Inserted repository data is contained in reversible transactions.
 
 ## Code formatting
 
@@ -1316,6 +1387,7 @@ The project is developed incrementally.
 * [x] Expand integration tests for simulation execution.
 * [x] Return `201 Created` with persisted identity and `Location`.
 * [x] Retrieve a persisted simulation by ID.
+* [x] List persisted simulations with offset pagination, collection metadata, and summaries that omit states.
 
 ### Phase 5 — Persistence
 

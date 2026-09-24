@@ -63,4 +63,94 @@ public sealed class OpenApiEndpointTests :
             JsonValueKind.Object,
             root.GetProperty("paths").ValueKind);
     }
+
+    [Fact]
+    public async Task GetOpenApiDocument_DocumentsSimulationOperations()
+    {
+        using HttpResponseMessage response =
+            await _client.GetAsync(
+                "/openapi/v1.json");
+
+        response.EnsureSuccessStatusCode();
+
+        await using Stream contentStream =
+            await response.Content.ReadAsStreamAsync();
+
+        using JsonDocument document =
+            await JsonDocument.ParseAsync(
+                contentStream);
+
+        JsonElement paths =
+            document.RootElement.GetProperty(
+                "paths");
+
+        JsonElement collectionPath =
+            paths.GetProperty(
+                "/api/simulations");
+
+        JsonElement listOperation =
+            collectionPath.GetProperty("get");
+
+        JsonElement createOperation =
+            collectionPath.GetProperty("post");
+
+        JsonElement listResponses =
+            listOperation.GetProperty(
+                "responses");
+
+        Assert.True(
+            listResponses.TryGetProperty(
+                "200",
+                out _));
+
+        Assert.True(
+            listResponses.TryGetProperty(
+                "400",
+                out _));
+
+        string?[] parameterNames =
+            listOperation
+                .GetProperty("parameters")
+                .EnumerateArray()
+                .Select(parameter =>
+                    parameter.GetProperty("name")
+                        .GetString())
+                .ToArray();
+
+        Assert.Contains("page", parameterNames);
+        Assert.Contains("pageSize", parameterNames);
+
+        JsonElement createResponses =
+            createOperation.GetProperty(
+                "responses");
+
+        Assert.True(
+            createResponses.TryGetProperty(
+                "201",
+                out _));
+
+        Assert.True(
+            createResponses.TryGetProperty(
+                "400",
+                out _));
+
+        JsonElement resourcePath =
+            paths.GetProperty(
+                "/api/simulations/{id}");
+
+        JsonElement resourceResponses =
+            resourcePath
+                .GetProperty("get")
+                .GetProperty("responses");
+
+        Assert.True(
+            resourceResponses.TryGetProperty(
+                "200",
+                out _));
+
+        Assert.True(
+            resourceResponses.TryGetProperty(
+                "404",
+                out _));
+    }
 }

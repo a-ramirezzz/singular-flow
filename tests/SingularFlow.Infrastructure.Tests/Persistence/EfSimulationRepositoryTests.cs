@@ -179,4 +179,151 @@ public sealed class EfSimulationRepositoryTests
 
         Assert.Null(result);
     }
+
+    [Fact]
+    public async Task ListAsync_ReturnsStablePagedSummaries()
+    {
+        string connectionString =
+            Environment.GetEnvironmentVariable(
+                "SINGULARFLOW_TEST_CONNECTION_STRING")
+            ?? throw new InvalidOperationException(
+                "Set SINGULARFLOW_TEST_CONNECTION_STRING.");
+
+        NpgsqlConnectionStringBuilder connection = new(
+            connectionString);
+
+        Assert.Equal(
+            "singular_flow_tests",
+            connection.Database);
+
+        DbContextOptions<SingularFlowDbContext> options =
+            new DbContextOptionsBuilder<SingularFlowDbContext>()
+                .UseNpgsql(connectionString)
+                .Options;
+
+        await using SingularFlowDbContext context =
+            new(options);
+
+        await context.Database.MigrateAsync();
+
+        await using var transaction =
+            await context.Database.BeginTransactionAsync();
+
+        int baselineCount =
+            await context.Simulations.CountAsync();
+
+        SimulationEntity newest = CreateSimulation(
+            id: Guid.Parse(
+                "00000000-0000-0000-0000-000000000003"),
+            createdAtUtc: new DateTimeOffset(
+                2099,
+                1,
+                3,
+                0,
+                0,
+                0,
+                TimeSpan.Zero),
+            singularTime: 1.3);
+
+        SimulationEntity middle = CreateSimulation(
+            id: Guid.Parse(
+                "00000000-0000-0000-0000-000000000002"),
+            createdAtUtc: new DateTimeOffset(
+                2099,
+                1,
+                2,
+                0,
+                0,
+                0,
+                TimeSpan.Zero),
+            singularTime: 1.2);
+
+        SimulationEntity oldest = CreateSimulation(
+            id: Guid.Parse(
+                "00000000-0000-0000-0000-000000000001"),
+            createdAtUtc: new DateTimeOffset(
+                2099,
+                1,
+                1,
+                0,
+                0,
+                0,
+                TimeSpan.Zero),
+            singularTime: 1.1);
+
+        context.Simulations.AddRange(
+            newest,
+            middle,
+            oldest);
+
+        await context.SaveChangesAsync();
+
+        context.ChangeTracker.Clear();
+
+        EfSimulationRepository repository = new(
+            context);
+
+        PagedSimulationResult firstPage =
+            await repository.ListAsync(
+                page: 1,
+                pageSize: 2,
+                CancellationToken.None);
+
+        Assert.Equal(1, firstPage.Page);
+        Assert.Equal(2, firstPage.PageSize);
+        Assert.Equal(
+            baselineCount + 3,
+            firstPage.TotalCount);
+
+        Assert.Equal(
+            (int)Math.Ceiling(
+                (baselineCount + 3) / 2.0),
+            firstPage.TotalPages);
+
+        Assert.Equal(2, firstPage.Items.Count);
+        Assert.Equal(newest.Id, firstPage.Items[0].Id);
+        Assert.Equal(middle.Id, firstPage.Items[1].Id);
+        Assert.Equal(1.3, firstPage.Items[0].SingularTime);
+        Assert.Equal(3, firstPage.Items[0].SampleCount);
+
+        PagedSimulationResult secondPage =
+            await repository.ListAsync(
+                page: 2,
+                pageSize: 2,
+                CancellationToken.None);
+
+        Assert.NotEmpty(secondPage.Items);
+        Assert.Equal(oldest.Id, secondPage.Items[0].Id);
+
+        PagedSimulationResult outsideRange =
+            await repository.ListAsync(
+                page: baselineCount + 4,
+                pageSize: 1,
+                CancellationToken.None);
+
+        Assert.Empty(outsideRange.Items);
+        Assert.Equal(
+            baselineCount + 3,
+            outsideRange.TotalCount);
+
+        await transaction.RollbackAsync();
+
+        static SimulationEntity CreateSimulation(
+            Guid id,
+            DateTimeOffset createdAtUtc,
+            double singularTime)
+        {
+            return new SimulationEntity
+            {
+                Id = id,
+                SingularTime = singularTime,
+                ConcentrationExponent = 0.005,
+                StartTime = 0.0,
+                EndTime = 0.8,
+                SampleCount = 3,
+                SamplingMode = SamplingMode.Uniform,
+                CreatedAtUtc = createdAtUtc
+            };
+        }
+    }
 }

@@ -108,6 +108,13 @@ public sealed class SimulationPersistenceEndpointTests
     private sealed class RecordingSimulationRepository :
         ISimulationRepository
     {
+        public Task<PagedSimulationResult> ListAsync(
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         public RunSimulationResult? SavedResult { get; private set; }
 
         public Task<PersistedSimulationResult> SaveAsync(
