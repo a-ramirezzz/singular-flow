@@ -131,6 +131,20 @@ public sealed class EfSimulationRepository : ISimulationRepository
             PageSize: pageSize,
             TotalCount: totalCount);
     }
+    public async Task<bool> DeleteAsync(
+    Guid id,
+    CancellationToken cancellationToken)
+    {
+        int affectedRows =
+            await _context.Simulations
+                .Where(
+                    simulation =>
+                        simulation.Id == id)
+                .ExecuteDeleteAsync(
+                    cancellationToken);
+
+        return affectedRows > 0;
+    }
 
     public async Task<PersistedSimulationResult?> GetByIdAsync(
         Guid id,

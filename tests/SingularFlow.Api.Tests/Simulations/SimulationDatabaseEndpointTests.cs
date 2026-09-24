@@ -18,7 +18,7 @@ namespace SingularFlow.Api.Tests.Simulations;
 public sealed class SimulationDatabaseEndpointTests
 {
     [Fact]
-    public async Task PostSimulation_SavesStatesInPostgreSql()
+    public async Task SimulationLifecycle_PersistsQueriesAndDeletesInPostgreSql()
     {
         string connectionString =
             Environment.GetEnvironmentVariable(
@@ -256,7 +256,38 @@ public sealed class SimulationDatabaseEndpointTests
                 0.8,
                 states[3].Time,
                 precision: 10);
+
+            using HttpResponseMessage deleteResponse =
+    await client.DeleteAsync(
+        location);
+
+            Assert.Equal(
+                HttpStatusCode.NoContent,
+                deleteResponse.StatusCode);
+
+            using HttpResponseMessage deletedGetResponse =
+                await client.GetAsync(
+                    location);
+
+            Assert.Equal(
+                HttpStatusCode.NotFound,
+                deletedGetResponse.StatusCode);
+
+            context.ChangeTracker.Clear();
+
+            Assert.False(
+                await context.Simulations
+                    .AnyAsync(
+                        simulation =>
+                            simulation.Id == simulationId));
+
+            Assert.False(
+                await context.SimulationStates
+                    .AnyAsync(
+                        state =>
+                            state.SimulationId == simulationId));
         }
+
         finally
         {
             await context.Simulations

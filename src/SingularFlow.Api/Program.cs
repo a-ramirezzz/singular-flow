@@ -23,6 +23,8 @@ builder.Services.AddScoped<GetSimulationHandler>();
 
 builder.Services.AddScoped<ListSimulationsHandler>();
 
+builder.Services.AddScoped<DeleteSimulationHandler>();
+
 builder.Services.AddDbContext<SingularFlowDbContext>(options =>
 {
     string connectionString =

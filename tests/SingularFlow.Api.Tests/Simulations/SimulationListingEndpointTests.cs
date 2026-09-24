@@ -221,6 +221,12 @@ public sealed class SimulationListingEndpointTests
     private sealed class ListingSimulationRepository :
         ISimulationRepository
     {
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         private readonly PagedSimulationResult _result;
 
         public ListingSimulationRepository(

@@ -27,6 +27,12 @@ public sealed class SimulationEndpointFactory :
     private sealed class NoOpSimulationRepository :
         ISimulationRepository
     {
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         public Task<PagedSimulationResult> ListAsync(
             int page,
             int pageSize,

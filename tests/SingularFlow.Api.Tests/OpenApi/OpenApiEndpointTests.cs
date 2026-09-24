@@ -152,5 +152,20 @@ public sealed class OpenApiEndpointTests :
             resourceResponses.TryGetProperty(
                 "404",
                 out _));
+
+        JsonElement deleteResponses =
+    resourcePath
+        .GetProperty("delete")
+        .GetProperty("responses");
+
+        Assert.True(
+            deleteResponses.TryGetProperty(
+                "204",
+                out _));
+
+        Assert.True(
+            deleteResponses.TryGetProperty(
+                "404",
+                out _));
     }
 }
