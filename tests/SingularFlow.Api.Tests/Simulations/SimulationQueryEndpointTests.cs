@@ -153,6 +153,13 @@ public sealed class SimulationQueryEndpointTests
     private sealed class QuerySimulationRepository :
         ISimulationRepository
     {
+        public Task<PagedSimulationResult> ListAsync(
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         private readonly PersistedSimulationResult _persisted;
 
         public QuerySimulationRepository(

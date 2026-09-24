@@ -21,6 +21,8 @@ builder.Services.AddScoped<RunAndSaveSimulationHandler>();
 
 builder.Services.AddScoped<GetSimulationHandler>();
 
+builder.Services.AddScoped<ListSimulationsHandler>();
+
 builder.Services.AddDbContext<SingularFlowDbContext>(options =>
 {
     string connectionString =

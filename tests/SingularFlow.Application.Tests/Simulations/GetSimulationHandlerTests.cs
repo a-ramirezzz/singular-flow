@@ -76,6 +76,13 @@ public sealed class GetSimulationHandlerTests
     private sealed class StubSimulationRepository :
         ISimulationRepository
     {
+        public Task<PagedSimulationResult> ListAsync(
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         private readonly PersistedSimulationResult? _result;
 
         public StubSimulationRepository(

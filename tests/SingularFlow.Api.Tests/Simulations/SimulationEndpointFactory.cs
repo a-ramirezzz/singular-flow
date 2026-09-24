@@ -27,6 +27,19 @@ public sealed class SimulationEndpointFactory :
     private sealed class NoOpSimulationRepository :
         ISimulationRepository
     {
+        public Task<PagedSimulationResult> ListAsync(
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            PagedSimulationResult result = new(
+                Items: Array.Empty<SimulationSummaryResult>(),
+                Page: page,
+                PageSize: pageSize,
+                TotalCount: 0);
+
+            return Task.FromResult(result);
+        }
         public Task<PersistedSimulationResult> SaveAsync(
             RunSimulationResult result,
             CancellationToken cancellationToken)

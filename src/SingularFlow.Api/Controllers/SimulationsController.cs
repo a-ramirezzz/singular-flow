@@ -11,13 +11,16 @@ public sealed class SimulationsController : ControllerBase
 {
     private readonly RunAndSaveSimulationHandler _runHandler;
     private readonly GetSimulationHandler _getHandler;
+    private readonly ListSimulationsHandler _listHandler;
 
     public SimulationsController(
         RunAndSaveSimulationHandler runHandler,
-        GetSimulationHandler getHandler)
+        GetSimulationHandler getHandler,
+        ListSimulationsHandler listHandler)
     {
         _runHandler = runHandler;
         _getHandler = getHandler;
+        _listHandler = listHandler;
     }
 
     [HttpGet(
@@ -30,6 +33,7 @@ public sealed class SimulationsController : ControllerBase
         typeof(ProblemDetails),
         StatusCodes.Status404NotFound)]
     public async Task<ActionResult<RunSimulationApiResponse>>
+
         GetById(
             Guid id,
             CancellationToken cancellationToken)
@@ -45,6 +49,34 @@ public sealed class SimulationsController : ControllerBase
         }
 
         RunSimulationApiResponse response =
+            SimulationContractMapper.ToApi(
+                result);
+
+        return Ok(response);
+    }
+
+    [HttpGet]
+    [ProducesResponseType(
+        typeof(PagedSimulationsResponse),
+        StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(ProblemDetails),
+        StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<PagedSimulationsResponse>>
+        List(
+            CancellationToken cancellationToken,
+            [FromQuery] int page =
+                ListSimulationsHandler.DefaultPage,
+            [FromQuery] int pageSize =
+                ListSimulationsHandler.DefaultPageSize)
+    {
+        PagedSimulationResult result =
+            await _listHandler.HandleAsync(
+                page,
+                pageSize,
+                cancellationToken);
+
+        PagedSimulationsResponse response =
             SimulationContractMapper.ToApi(
                 result);
 

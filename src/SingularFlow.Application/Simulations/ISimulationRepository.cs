@@ -9,4 +9,9 @@ public interface ISimulationRepository
     Task<PersistedSimulationResult?> GetByIdAsync(
         Guid id,
         CancellationToken cancellationToken);
+
+    Task<PagedSimulationResult> ListAsync(
+    int page,
+    int pageSize,
+        CancellationToken cancellationToken);
 }

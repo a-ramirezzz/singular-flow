@@ -62,6 +62,40 @@ internal static class SimulationContractMapper
                 ToApiValue(result.SamplingMode),
             States: states);
     }
+    public static PagedSimulationsResponse ToApi(
+        PagedSimulationResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        SimulationSummaryResponse[] items =
+            result.Items
+                .Select(summary =>
+                    new SimulationSummaryResponse(
+                        Id: summary.Id,
+                        CreatedAtUtc:
+                            summary.CreatedAtUtc,
+                        SingularTime:
+                            summary.SingularTime,
+                        ConcentrationExponent:
+                            summary.ConcentrationExponent,
+                        StartTime:
+                            summary.StartTime,
+                        EndTime:
+                            summary.EndTime,
+                        SampleCount:
+                            summary.SampleCount,
+                        SamplingMode:
+                            ToApiValue(
+                                summary.SamplingMode)))
+                .ToArray();
+
+        return new PagedSimulationsResponse(
+            Items: items,
+            Page: result.Page,
+            PageSize: result.PageSize,
+            TotalCount: result.TotalCount,
+            TotalPages: result.TotalPages);
+    }
 
     private static SamplingMode ParseSamplingMode(
         string? value)
