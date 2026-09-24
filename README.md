@@ -14,11 +14,11 @@ The current version calculates individual vortex-core scaling states and generat
 
 Application orchestration is separated from the mathematical domain through a dedicated use case. The command-line interface creates a simulation request, delegates execution to the application layer, and displays the structured result.
 
-The ASP.NET Core Web API executes simulations over HTTP with uniform or logarithmic sampling. It also exposes a health-check endpoint and generates an OpenAPI document in Development. Invalid requests receive standardized HTTP errors.
+The ASP.NET Core Web API supports creation, paginated listing, retrieval by ID, and deletion of persisted simulations. It executes simulations over HTTP with uniform or logarithmic sampling, exposes a health-check endpoint, and generates an OpenAPI document in Development. Invalid requests receive standardized HTTP errors.
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-Local PostgreSQL 18.6 infrastructure is available through Docker Compose. `SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The API connects to PostgreSQL through Npgsql and persists each simulation and its ordered states before returning `201 Created` with the database-generated `id` and `createdAtUtc`. The `Location` header identifies the GET-by-ID endpoint, while a separate paginated collection endpoint lists persisted simulations.
+Local PostgreSQL 18.6 infrastructure is available through Docker Compose. `SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The API connects to PostgreSQL through Npgsql and persists each simulation and its ordered states before returning `201 Created` with the database-generated `id` and `createdAtUtc`. The `Location` header identifies the GET-by-ID endpoint, a separate paginated collection endpoint lists lightweight summaries, and the resource endpoint can physically delete a persisted simulation and its states.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -45,7 +45,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, API, and Infrastructure behavior with 86 automated tests: 42 Domain, 12 Application, 18 API, and 14 Infrastructure tests.
+* Verify domain, application, API, and Infrastructure behavior with 92 automated tests: 42 Domain, 14 Application, 20 API, and 16 Infrastructure tests.
 * Validate every pull request and push to `main` with GitHub Actions.
 * Host an ASP.NET Core Web API.
 * Expose an operational health-check endpoint.
@@ -56,11 +56,12 @@ The project is being developed incrementally with Domain and Application unit te
 * Return `201 Created` with the persisted `id`, database-generated `createdAtUtc`, and a `Location` header.
 * Retrieve persisted simulations through `GET /api/simulations/{id}` and return `404 Not Found` for an unknown ID.
 * List persisted simulations through `GET /api/simulations` with optional `page` and `pageSize` parameters, defaults of `1` and `20`, and a maximum page size of `100`.
+* Delete persisted simulations through `DELETE /api/simulations/{id}`, returning `204 No Content` for an existing ID and `404 Not Found` for an unknown ID.
 * Return lightweight simulation summaries in stable newest-first order with `page`, `pageSize`, `totalCount`, and `totalPages` metadata, without returning state collections.
 * Return `400 Bad Request` with `ProblemDetails` when pagination values fall outside their accepted ranges.
 * Map dedicated API contracts to Application requests and results, and return structured JSON states.
 * Return `400 Bad Request` with `ProblemDetails` for invalid simulation parameters and `ValidationProblemDetails` for model-binding or malformed-JSON failures.
-* Document collection GET with pagination parameters and `200` and `400` responses, POST with `201` and `400`, and GET by ID with `200` and `404` through OpenAPI.
+* Document collection GET with pagination parameters and `200` and `400` responses, POST with `201` and `400`, and GET and DELETE by ID with their success and `404` responses through OpenAPI.
 * Provide reusable HTTP requests in `SingularFlow.Api.http`.
 * Start PostgreSQL locally with Docker Compose and check the database container's health.
 * Persist local database data through a named Docker volume.
@@ -68,7 +69,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Model simulations and their generated states with EF Core persistence entities, PostgreSQL mappings, constraints, indexes, and a tracked initial migration.
 * Keep the Application persistence contracts and orchestration independent of EF Core.
 * Project collection summaries directly from PostgreSQL without loading `simulation_states` rows.
-* Verify the complete HTTP-to-PostgreSQL POST, GET-by-ID, and collection-listing path with a dedicated database integration test.
+* Verify the complete HTTP-to-PostgreSQL POST, GET-by-ID, collection-listing, DELETE, and subsequent GET `404` lifecycle with a dedicated database integration test, including cascade removal of child states.
 * Create the EF Core context at design time without storing a database password in the repository.
 
 ## Mathematical model
@@ -357,6 +358,7 @@ singular-flow/
 │   │   └── appsettings.json
 │   ├── SingularFlow.Application/
 │   │   ├── Simulations/
+│   │   │   ├── DeleteSimulationHandler.cs
 │   │   │   ├── GetSimulationHandler.cs
 │   │   │   ├── ISimulationRepository.cs
 │   │   │   ├── ListSimulationsHandler.cs
@@ -404,6 +406,7 @@ singular-flow/
 │   │   ├── OpenApi/
 │   │   │   └── OpenApiEndpointTests.cs
 │   │   ├── Simulations/
+│   │   │   ├── SimulationDeletionEndpointTests.cs
 │   │   │   ├── SimulationDatabaseEndpointTests.cs
 │   │   │   ├── SimulationEndpointTests.cs
 │   │   │   ├── SimulationEndpointFactory.cs
@@ -415,6 +418,7 @@ singular-flow/
 │   │   └── SingularFlow.Api.Tests.csproj
 │   ├── SingularFlow.Application.Tests/
 │   │   ├── Simulations/
+│   │   │   ├── DeleteSimulationHandlerTests.cs
 │   │   │   ├── GetSimulationHandlerTests.cs
 │   │   │   ├── ListSimulationsHandlerTests.cs
 │   │   │   ├── RunAndSaveSimulationHandlerTests.cs
@@ -481,7 +485,8 @@ Current responsibilities include:
 * Starting and configuring the web application.
 * Receiving HTTP simulation requests through an MVC controller.
 * Mapping API contracts to Application requests and Application results to HTTP response contracts.
-* Executing `RunAndSaveSimulationHandler`, `GetSimulationHandler`, and `ListSimulationsHandler` through dependency injection and returning persisted simulations as JSON.
+* Executing `RunAndSaveSimulationHandler`, `GetSimulationHandler`, `ListSimulationsHandler`, and `DeleteSimulationHandler` through dependency injection.
+* Translating the Boolean deletion result into `204 No Content` or `404 Not Found`.
 * Registering `SingularFlowDbContext` with Npgsql from `ConnectionStrings:SingularFlow`.
 * Binding `ISimulationRepository` to `EfSimulationRepository`.
 * Producing standardized HTTP errors for invalid requests.
@@ -512,11 +517,12 @@ Responsibilities include:
 * Returning generated persistence identity through `PersistedSimulationResult`.
 * Retrieving nullable persisted results through `GetSimulationHandler` and the repository abstraction.
 * Validating pagination boundaries and delegating valid collection queries through `ListSimulationsHandler` and the repository abstraction.
+* Owning the deletion use case through `DeleteSimulationHandler`, which delegates the simulation ID and cancellation token to the repository abstraction and returns its Boolean result.
 * Returning `PagedSimulationResult` metadata and collection-specific `SimulationSummaryResult` items without state collections.
 * Returning structured simulation results.
 * Preventing presentation concerns from entering the domain layer.
 
-The application project depends on `SingularFlow.Domain` and has no EF Core dependency.
+The application project depends on `SingularFlow.Domain` and has no dependency on EF Core, PostgreSQL, Infrastructure, or ASP.NET Core.
 
 It does not depend on the command-line interface or test projects.
 
@@ -537,11 +543,13 @@ Responsibilities include:
 * Reconstructing Application and Domain results with states ordered by `Sequence`, or returning `null` when the ID does not exist.
 * Listing simulations with a separate count query and an `AsNoTracking` summary projection ordered by creation time and ID in descending order.
 * Applying offset pagination without including or loading related state rows.
+* Physically deleting a simulation with a direct, ID-filtered `ExecuteDeleteAsync` command and using its affected-row count to report whether the resource existed.
+* Relying on the existing required foreign key with `DeleteBehavior.Cascade` so PostgreSQL removes related `simulation_states` rows.
 * Providing design-time context creation without a stored password.
 
 Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. EF Core remains confined to Infrastructure and the API composition root; Application and Domain do not depend on it.
 
-The persisted query features use the existing schema and do not require a new migration.
+The persisted query and deletion features use the existing schema and do not require a new migration.
 
 ### SingularFlow.Cli
 
@@ -588,7 +596,7 @@ The test project depends directly on `SingularFlow.Domain`.
 
 Contains automated tests for application use-case behavior.
 
-The twelve application tests verify:
+The fourteen application tests verify:
 
 * Rejection of a null simulation request.
 * Execution with uniform sampling.
@@ -603,6 +611,7 @@ The twelve application tests verify:
 * Delegation of valid collection pagination through the repository abstraction.
 * Rejection of page numbers below `1` and page sizes outside `1` through `100`.
 * Computation of total pages from the total count and page size.
+* Deletion delegation, propagation of the repository's Boolean result, and forwarding of the simulation ID and cancellation token.
 
 The test project depends directly on `SingularFlow.Application`.
 
@@ -610,7 +619,7 @@ The test project depends directly on `SingularFlow.Application`.
 
 Contains integration tests for the ASP.NET Core host, including one database-backed end-to-end test.
 
-The eighteen API tests verify:
+The twenty API tests verify:
 
 * `GET /health` returns `200 OK` and `Healthy`.
 * The Development OpenAPI document contains the API metadata, collection pagination parameters, and documented simulation operations and responses.
@@ -619,8 +628,9 @@ The eighteen API tests verify:
 * Missing sampling modes and malformed JSON return `400 ValidationProblemDetails`.
 * The persistence abstraction receives the calculated simulation before a successful response is returned.
 * Existing resource queries return the persisted representation and missing queries return `404 Not Found`.
+* Existing resource deletions return `204 No Content`, while missing IDs return `404 Not Found`.
 * Collection queries return summary fields and pagination metadata, use default query values, omit states, and reject invalid pagination with `400 Bad Request`.
-* The actual HTTP-to-PostgreSQL path creates a simulation, follows its `Location`, retrieves its configuration and ordered states, lists its summary, and removes the database record afterward.
+* The actual HTTP-to-PostgreSQL path creates a simulation, follows its `Location`, retrieves its configuration and ordered states, lists its summary, deletes it, observes a subsequent GET `404`, and verifies that neither the simulation nor its states remain.
 
 The contract and validation tests use `WebApplicationFactory<Program>` with a test repository, so they execute the real HTTP pipeline without requiring PostgreSQL. The dedicated database endpoint test retains the production repository, applies pending migrations, and deletes its inserted simulation afterward.
 
@@ -628,9 +638,9 @@ The test project depends directly on `SingularFlow.Api`.
 
 ### SingularFlow.Infrastructure.Tests
 
-Contains 14 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
+Contains 16 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
 
-The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. Repository integration tests also verify total count, page metadata, stable descending ordering, first and later pages, summary projection, and an out-of-range page with empty items and the original total count. The database tests apply pending migrations and use reversible transactions for inserted repository data.
+The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. Repository integration tests also verify total count, page metadata, stable descending ordering, first and later pages, summary projection, an out-of-range page with empty items and the original total count, deletion of an existing simulation and its states, and `false` for a missing deletion ID. The database tests apply pending migrations and use reversible transactions for inserted repository data.
 
 The test project depends directly on `SingularFlow.Infrastructure`.
 
@@ -772,7 +782,7 @@ The handler:
 
 `ListSimulationsHandler` rejects page numbers below `1` and page sizes outside `1` through `100`, then delegates valid requests to `ISimulationRepository.ListAsync`. `PagedSimulationResult` carries the items, requested page, page size, total count, and computed total pages. Its `SimulationSummaryResult` items form a collection-specific read model that intentionally excludes calculated states. These types belong to Application, so orchestration and collection models remain independent of EF Core and PostgreSQL.
 
-POST calculates and persists a simulation, GET by ID returns its detailed persisted representation, and collection GET returns lightweight persisted summaries.
+POST calculates and persists a simulation, GET by ID returns its detailed persisted representation, collection GET returns lightweight persisted summaries, and DELETE by ID physically removes a persisted simulation.
 
 ### Structured request and result objects
 
@@ -821,11 +831,11 @@ It hosts the simulation controller alongside the health and Development OpenAPI 
 
 ### Thin controller
 
-`SimulationsController` delegates creation to `RunAndSaveSimulationHandler`, detailed retrieval to `GetSimulationHandler`, and optional collection query parameters to `ListSimulationsHandler`. It maps paged Application results to dedicated API contracts and returns `200 OK` for valid listings. Invalid pagination flows through the existing exception pipeline. POST returns `201 Created`; a successful GET by ID returns `200 OK`, and a missing resource becomes `404 Not Found`. The controller contains no mathematical calculations or EF Core query logic.
+`SimulationsController` delegates creation to `RunAndSaveSimulationHandler`, detailed retrieval to `GetSimulationHandler`, optional collection query parameters to `ListSimulationsHandler`, and deletion to `DeleteSimulationHandler`. It maps paged Application results to dedicated API contracts and returns `200 OK` for valid listings. Invalid pagination flows through the existing exception pipeline. POST returns `201 Created`; a successful GET by ID returns `200 OK`; and DELETE maps the handler's Boolean result to `204 No Content` or `404 Not Found`. The controller contains no mathematical calculations or EF Core query logic.
 
 ### Dependency injection
 
-`RunSimulationHandler`, `RunAndSaveSimulationHandler`, `GetSimulationHandler`, and `ListSimulationsHandler` are registered with scoped lifetimes. The API registers `SingularFlowDbContext` with Npgsql, maps `ISimulationRepository` to `EfSimulationRepository`, and injects the handlers into `SimulationsController`.
+`RunSimulationHandler`, `RunAndSaveSimulationHandler`, `GetSimulationHandler`, `ListSimulationsHandler`, and `DeleteSimulationHandler` are registered with scoped lifetimes. The API registers `SingularFlowDbContext` with Npgsql, maps `ISimulationRepository` to `EfSimulationRepository`, and injects the handlers into `SimulationsController`.
 
 ### Global exception handling
 
@@ -837,7 +847,7 @@ It hosts the simulation controller alongside the health and Development OpenAPI 
 
 ### HTTP status choice
 
-POST creates a persisted simulation resource and returns `201 Created` with its representation. The response body contains the generated `id` and `createdAtUtc`, and `Location` identifies `GET /api/simulations/{id}`. GET by ID returns `200 OK` when the resource exists and `404 Not Found` when it does not. Collection GET returns `200 OK`; an empty database has empty `items`, `totalCount` and `totalPages` of `0`, while a valid page beyond the available range retains its requested metadata and total count with empty `items`. Neither case is a `404`. Invalid POST input and invalid collection pagination return `400 Bad Request`.
+POST creates a persisted simulation resource and returns `201 Created` with its representation. The response body contains the generated `id` and `createdAtUtc`, and `Location` identifies `GET /api/simulations/{id}`. GET by ID returns `200 OK` when the resource exists and `404 Not Found` when it does not. DELETE by ID returns `204 No Content` with no response body when a resource was deleted and `404 Not Found` when no simulation matched the ID. Collection GET returns `200 OK`; an empty database has empty `items`, `totalCount` and `totalPages` of `0`, while a valid page beyond the available range retains its requested metadata and total count with empty `items`. Neither case is a `404`. Invalid POST input and invalid collection pagination return `400 Bad Request`.
 
 ### Operational health check
 
@@ -849,19 +859,23 @@ It returns `200 OK` with `Healthy` while all registered checks report a healthy 
 
 OpenAPI generation is enabled only in the Development environment and currently produces an OpenAPI 3.1.1 document.
 
-The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, and `GET /api/simulations/{id}` with `200` and `404`. The infrastructure health endpoint is intentionally not included as a controller operation.
+The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, `GET /api/simulations/{id}` with `200` and `404`, and `DELETE /api/simulations/{id}` with `204` and `404`. The infrastructure health endpoint is intentionally not included as a controller operation.
 
 ### In-memory API testing
 
 `SingularFlow.Api.Tests` uses `WebApplicationFactory<Program>`.
 
-This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server. Contract, validation, and query tests replace `ISimulationRepository` with test implementations; a separate test retains `EfSimulationRepository` to verify the actual HTTP-to-PostgreSQL creation, detailed retrieval, and collection listing path before cleaning up the created record.
+This starts the real ASP.NET Core pipeline in memory and verifies HTTP status codes, response bodies, content types, and generated OpenAPI metadata without requiring a separately running server. Contract, validation, query, and deletion tests replace `ISimulationRepository` with test implementations; a separate test retains `EfSimulationRepository` to verify the actual HTTP-to-PostgreSQL creation, detailed retrieval, collection listing, deletion, subsequent GET `404`, and cascade removal of child states.
 
 ### Paginated summary projection
 
 `EfSimulationRepository.ListAsync` performs a read-only `AsNoTracking` query. It first uses `CountAsync` for collection metadata, calculates the offset with `long` arithmetic to avoid multiplication overflow for very large page numbers, and returns empty items without running the page query when the offset is beyond the total count.
 
 For a page that can contain data, EF Core generates a separate query ordered by `CreatedAtUtc` descending and then `Id` descending as a stable tie-breaker. The query applies offset pagination through `Skip` and `Take` and projects directly to `SimulationSummaryResult`. It does not call `Include`, materialize full persistence entities for the response, or load `simulation_states`. Collection summaries keep payloads bounded instead of returning every calculated state for every simulation. The existing `simulations` table and `created_at_utc` index are reused, so no new migration is required.
+
+### Direct physical deletion
+
+`EfSimulationRepository.DeleteAsync` filters `simulations` by ID and uses `ExecuteDeleteAsync`, so EF Core emits a direct DELETE without first loading the simulation or its states. An affected-row count greater than zero means a resource was deleted; zero means the ID was missing. This is a physical deletion, not soft deletion. PostgreSQL removes the ordered `simulation_states` rows through the existing required foreign key with `DeleteBehavior.Cascade`; there is no application-level child-delete loop. The EF Core model and database schema are unchanged, so no new migration is required.
 
 ## Simulation API
 
@@ -968,6 +982,14 @@ Accept: application/json
 
 `GET /api/simulations/{id}` returns the same persisted representation with `200 OK`, with states in their original sequence. An unknown ID returns `404 Not Found`.
 
+Delete the same persisted simulation using its ID:
+
+```http
+DELETE {{SingularFlow.Api_HostAddress}}/api/simulations/{{SimulationId}}
+```
+
+`DELETE /api/simulations/{id}` returns `204 No Content` with no response body when deletion succeeds. An unknown ID returns `404 Not Found`. A typical persisted-resource workflow is to create a simulation, capture the returned `id` or `Location`, retrieve it or find its lightweight summary in the paginated list, delete it, and then observe `404 Not Found` from a subsequent GET.
+
 Invalid sampling modes or mathematical and time-series parameters return `400 Bad Request` with `application/problem+json` and a `ProblemDetails` body, for example:
 
 ```json
@@ -991,7 +1013,7 @@ The `detail` text can include parameter information. Missing required values and
 }
 ```
 
-Validation error keys and messages depend on the failed input. The Development OpenAPI document at `/openapi/v1.json` includes collection GET with `page` and `pageSize` parameters and `200` and `400` responses, POST with `201` and `400`, and GET by ID with `200` and `404`.
+Validation error keys and messages depend on the failed input. The Development OpenAPI document at `/openapi/v1.json` includes collection GET with `page` and `pageSize` parameters and `200` and `400` responses, POST with `201` and `400`, GET by ID with `200` and `404`, and DELETE by ID with `204` and `404`.
 
 ## Requirements
 
@@ -1077,7 +1099,7 @@ The following command is destructive to local database data because it removes t
 docker compose down --volumes
 ```
 
-The API requires PostgreSQL and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, and collection `GET /api/simulations`. Startup registers the context but deliberately does not apply migrations automatically. Collection listing reuses the existing `simulations` table and its `created_at_utc` index, so it requires no new migration.
+The API requires the same configured PostgreSQL connection and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, collection `GET /api/simulations`, and `DELETE /api/simulations/{id}`. Startup registers the context but deliberately does not apply migrations automatically. Collection listing and deletion reuse the existing schema, so this feature introduces no schema changes and requires no new migration.
 
 ## EF Core migrations and database schema
 
@@ -1222,7 +1244,7 @@ curl --include http://localhost:5278/api/simulations \
   --data '{"singularTime":1.0,"concentrationExponent":0.005,"startTime":0.0,"endTime":0.9999,"sampleCount":6,"samplingMode":"adaptive"}'
 ```
 
-`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for health, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, malformed JSON, and persisted simulation retrieval.
+`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for health, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, malformed JSON, persisted simulation retrieval, and deletion based on `SimulationId`.
 
 ## Test
 
@@ -1260,16 +1282,16 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 86 automated tests distributed across:
+The solution currently contains 92 automated tests distributed across:
 
 * 42 Domain unit tests.
-* 12 Application unit tests.
-* 18 API tests.
-* 14 Infrastructure tests.
+* 14 Application unit tests.
+* 20 API tests.
+* 16 Infrastructure tests.
 
-The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, and total-page calculation. The API tests cover health, OpenAPI operations, response codes and pagination parameter names, valid logarithmic and uniform requests, request failures, persistence delegation, existing and missing resource queries, default and explicit pagination, summary fields and metadata, omission of state collections, invalid pagination responses, and the real HTTP-to-PostgreSQL creation, detailed retrieval, and collection listing path. HTTP contract, validation, and query tests substitute a test repository; only the dedicated database endpoint test uses PostgreSQL and cleans up its created record.
+The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, total-page calculation, and deletion delegation with Boolean-result, ID, and cancellation-token propagation. The API tests cover health, OpenAPI operations, response codes and pagination parameter names, valid logarithmic and uniform requests, request failures, persistence delegation, existing and missing resource queries and deletions, default and explicit pagination, summary fields and metadata, omission of state collections, invalid pagination responses, and the real HTTP-to-PostgreSQL lifecycle. That integration test verifies creation, retrieval, listing, deletion, a subsequent GET `404`, and direct database confirmation that both the simulation and its child states are gone. HTTP contract, validation, query, and deletion tests substitute a test repository; only the dedicated database endpoint test uses PostgreSQL.
 
-Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration tests connect to the dedicated test database and verify saving, detailed querying, ordered state reconstruction, a nullable result for a missing ID, total count, offset pagination, stable newest-first ordering, summary projection, later pages, and out-of-range pages. Inserted repository data is contained in reversible transactions.
+Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration tests connect to the dedicated test database and verify saving, detailed querying, ordered state reconstruction, a nullable result for a missing ID, total count, offset pagination, stable newest-first ordering, summary projection, later pages, out-of-range pages, physical deletion with cascade removal of states, and `false` for a missing deletion ID. Inserted repository data is contained in reversible transactions.
 
 ## Code formatting
 
@@ -1373,6 +1395,7 @@ The project is developed incrementally.
 * [x] Add automated application tests.
 * [x] Add cancellation support to asynchronous persistence.
 * [x] Add a use case for retrieving a persisted simulation by ID.
+* [x] Add a use case for deleting a persisted simulation by ID.
 * [ ] Introduce additional use cases when required by the Web API.
 
 ### Phase 4 — Web API
@@ -1388,6 +1411,7 @@ The project is developed incrementally.
 * [x] Return `201 Created` with persisted identity and `Location`.
 * [x] Retrieve a persisted simulation by ID.
 * [x] List persisted simulations with offset pagination, collection metadata, and summaries that omit states.
+* [x] Delete persisted simulations by ID with `204` and `404` responses.
 
 ### Phase 5 — Persistence
 
@@ -1404,6 +1428,7 @@ The project is developed incrementally.
 * [x] Save simulation executions and calculated states.
 * [x] Return generated persistence identity from simulation creation.
 * [x] Add database-backed persistence integration tests.
+* [x] Physically delete simulations and cascade deletion to their persisted states.
 
 ### Phase 6 — Background processing
 

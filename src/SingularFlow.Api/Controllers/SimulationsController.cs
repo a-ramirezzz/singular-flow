@@ -12,15 +12,18 @@ public sealed class SimulationsController : ControllerBase
     private readonly RunAndSaveSimulationHandler _runHandler;
     private readonly GetSimulationHandler _getHandler;
     private readonly ListSimulationsHandler _listHandler;
+    private readonly DeleteSimulationHandler _deleteHandler;
 
     public SimulationsController(
         RunAndSaveSimulationHandler runHandler,
         GetSimulationHandler getHandler,
-        ListSimulationsHandler listHandler)
+        ListSimulationsHandler listHandler,
+        DeleteSimulationHandler deleteHandler)
     {
         _runHandler = runHandler;
         _getHandler = getHandler;
         _listHandler = listHandler;
+        _deleteHandler = deleteHandler;
     }
 
     [HttpGet(
@@ -53,6 +56,29 @@ public sealed class SimulationsController : ControllerBase
                 result);
 
         return Ok(response);
+    }
+
+    [HttpDelete("{id:guid}")]
+    [ProducesResponseType(
+        StatusCodes.Status204NoContent)]
+    [ProducesResponseType(
+        typeof(ProblemDetails),
+        StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Delete(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        bool deleted =
+            await _deleteHandler.HandleAsync(
+                id,
+                cancellationToken);
+
+        if (!deleted)
+        {
+            return NotFound();
+        }
+
+        return NoContent();
     }
 
     [HttpGet]

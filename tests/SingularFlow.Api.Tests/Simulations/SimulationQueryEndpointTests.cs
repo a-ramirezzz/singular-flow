@@ -153,6 +153,12 @@ public sealed class SimulationQueryEndpointTests
     private sealed class QuerySimulationRepository :
         ISimulationRepository
     {
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         public Task<PagedSimulationResult> ListAsync(
             int page,
             int pageSize,

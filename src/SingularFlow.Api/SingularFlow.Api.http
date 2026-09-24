@@ -74,3 +74,8 @@ Accept: application/json
 
 GET {{SingularFlow.Api_HostAddress}}/api/simulations/{{SimulationId}}
 Accept: application/json
+
+### Delete a persisted simulation
+
+DELETE {{SingularFlow.Api_HostAddress}}/api/simulations/{{SimulationId}}
+Accept: application/problem+json

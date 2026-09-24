@@ -11,6 +11,126 @@ namespace SingularFlow.Infrastructure.Tests.Persistence;
 public sealed class EfSimulationRepositoryTests
 {
     [Fact]
+    public async Task DeleteAsync_ExistingId_RemovesSimulationAndStates()
+    {
+        string connectionString =
+            Environment.GetEnvironmentVariable(
+                "SINGULARFLOW_TEST_CONNECTION_STRING")
+            ?? throw new InvalidOperationException(
+                "Set SINGULARFLOW_TEST_CONNECTION_STRING.");
+
+        NpgsqlConnectionStringBuilder connection = new(
+            connectionString);
+
+        Assert.Equal(
+            "singular_flow_tests",
+            connection.Database);
+
+        DbContextOptions<SingularFlowDbContext> options =
+            new DbContextOptionsBuilder<SingularFlowDbContext>()
+                .UseNpgsql(connectionString)
+                .Options;
+
+        await using SingularFlowDbContext context =
+            new(options);
+
+        await context.Database.MigrateAsync();
+
+        await using var transaction =
+            await context.Database.BeginTransactionAsync();
+
+        RunSimulationRequest request = new(
+            SingularTime: 1.0,
+            ConcentrationExponent: 0.005,
+            StartTime: 0.0,
+            EndTime: 0.8,
+            SampleCount: 3,
+            SamplingMode: SamplingMode.Uniform);
+
+        RunSimulationResult simulation =
+            new RunSimulationHandler().Handle(
+                request);
+
+        EfSimulationRepository repository = new(
+            context);
+
+        PersistedSimulationResult persisted =
+            await repository.SaveAsync(
+                simulation,
+                CancellationToken.None);
+
+        int stateCount =
+            await context.SimulationStates
+                .CountAsync(
+                    state =>
+                        state.SimulationId ==
+                        persisted.Id);
+
+        Assert.Equal(3, stateCount);
+
+        bool deleted =
+            await repository.DeleteAsync(
+                persisted.Id,
+                CancellationToken.None);
+
+        Assert.True(deleted);
+
+        context.ChangeTracker.Clear();
+
+        Assert.False(
+            await context.Simulations
+                .AnyAsync(
+                    entity =>
+                        entity.Id == persisted.Id));
+
+        Assert.False(
+            await context.SimulationStates
+                .AnyAsync(
+                    state =>
+                        state.SimulationId ==
+                        persisted.Id));
+
+        await transaction.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task DeleteAsync_MissingId_ReturnsFalse()
+    {
+        string connectionString =
+            Environment.GetEnvironmentVariable(
+                "SINGULARFLOW_TEST_CONNECTION_STRING")
+            ?? throw new InvalidOperationException(
+                "Set SINGULARFLOW_TEST_CONNECTION_STRING.");
+
+        NpgsqlConnectionStringBuilder connection = new(
+            connectionString);
+
+        Assert.Equal(
+            "singular_flow_tests",
+            connection.Database);
+
+        DbContextOptions<SingularFlowDbContext> options =
+            new DbContextOptionsBuilder<SingularFlowDbContext>()
+                .UseNpgsql(connectionString)
+                .Options;
+
+        await using SingularFlowDbContext context =
+            new(options);
+
+        await context.Database.MigrateAsync();
+
+        EfSimulationRepository repository = new(
+            context);
+
+        bool deleted =
+            await repository.DeleteAsync(
+                Guid.NewGuid(),
+                CancellationToken.None);
+
+        Assert.False(deleted);
+    }
+
+    [Fact]
     public async Task SaveAsync_PersistsSimulationAndOrderedStates()
     {
         string connectionString =

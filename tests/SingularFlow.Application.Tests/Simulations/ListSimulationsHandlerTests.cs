@@ -79,6 +79,12 @@ public sealed class ListSimulationsHandlerTests
     private sealed class RecordingSimulationRepository :
         ISimulationRepository
     {
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
         private readonly PagedSimulationResult _result;
 
         public RecordingSimulationRepository(

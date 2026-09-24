@@ -14,4 +14,8 @@ public interface ISimulationRepository
     int page,
     int pageSize,
         CancellationToken cancellationToken);
+
+    Task<bool> DeleteAsync(
+        Guid id,
+        CancellationToken cancellationToken);
 }
