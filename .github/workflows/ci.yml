@@ -63,6 +63,12 @@ jobs:
           --configuration Release
           --no-restore
 
+      - name: Build API container image
+        run: >
+          docker build
+          --tag singular-flow-api:ci
+          .
+
       - name: Run automated tests
         env:
           SINGULARFLOW_TEST_CONNECTION_STRING: Host=127.0.0.1;Port=${{ job.services.postgres.ports[5432] }};Database=singular_flow_tests;Username=singular_flow;Password=ci_test_password

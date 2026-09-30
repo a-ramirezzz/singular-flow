@@ -53,7 +53,12 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+if (builder.Configuration.GetValue(
+        "HttpsRedirection:Enabled",
+        defaultValue: true))
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 

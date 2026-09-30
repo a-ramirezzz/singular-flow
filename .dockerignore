@@ -1,0 +1,9 @@
+**
+
+!global.json
+!src/
+!src/**
+
+**/bin/
+**/obj/
+**/.DS_Store
