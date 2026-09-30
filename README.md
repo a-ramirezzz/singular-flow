@@ -18,7 +18,9 @@ The ASP.NET Core Web API supports creation, paginated listing, retrieval by ID, 
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
-Local PostgreSQL 18.6 infrastructure is available through Docker Compose. `SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The API connects to PostgreSQL through Npgsql and persists each simulation and its ordered states before returning `201 Created` with the database-generated `id` and `createdAtUtc`. The `Location` header identifies the GET-by-ID endpoint, a separate paginated collection endpoint lists lightweight summaries, and the resource endpoint can physically delete a persisted simulation and its states.
+The complete local application stack can run through Docker Compose as separate ASP.NET Core API and PostgreSQL 18.6 services. Compose builds the API from the root `Dockerfile`, waits for PostgreSQL to become healthy before starting it, and can wait for both services to report healthy. The services communicate over the internal Compose network, where the API uses `postgres:5432` rather than PostgreSQL's host-published port.
+
+`SingularFlow.Infrastructure` defines the EF Core schema, mappings, initial migration, and repository implementation. The containerized API uses the same Npgsql and EF Core persistence path as direct local execution: it creates, lists, retrieves, and deletes simulations while persisting their ordered states in the separate PostgreSQL service. This local Compose stack is a development environment, not a complete production deployment platform.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -46,7 +48,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
 * Verify domain, application, API, and Infrastructure behavior with 95 automated tests: 42 Domain, 14 Application, 23 API, and 16 Infrastructure tests.
-* Validate every pull request and push to `main` with GitHub Actions.
+* Validate every pull request and push to `main` with GitHub Actions, including a build of the API Docker image.
 * Host an ASP.NET Core Web API.
 * Expose `GET /health/live` for process liveness, `GET /health/ready` for PostgreSQL connectivity readiness, and `GET /health` as a backward-compatible readiness alias.
 * Generate an OpenAPI 3.1.1 document in Development.
@@ -63,7 +65,8 @@ The project is being developed incrementally with Domain and Application unit te
 * Return `400 Bad Request` with `ProblemDetails` for invalid simulation parameters and `ValidationProblemDetails` for model-binding or malformed-JSON failures.
 * Document collection GET with pagination parameters and `200` and `400` responses, POST with `201` and `400`, and GET and DELETE by ID with their success and `404` responses through OpenAPI.
 * Provide reusable HTTP requests in `SingularFlow.Api.http`.
-* Start PostgreSQL locally with Docker Compose and check the database container's health.
+* Build the API as a multi-stage Docker image from the root `Dockerfile`.
+* Run the API and PostgreSQL together as separate Docker Compose services with readiness-based health checks.
 * Persist local database data through a named Docker volume.
 * Keep local database credentials outside version control.
 * Model simulations and their generated states with EF Core persistence entities, PostgreSQL mappings, constraints, indexes, and a tracked initial migration.
@@ -315,6 +318,7 @@ Sample count: 6
 * PostgreSQL 18.6 (`postgres:18.6-alpine3.24`)
 * Docker
 * Docker Compose
+* Alpine-based .NET SDK and ASP.NET Core runtime container images
 * Entity Framework Core 10.0.12 and Entity Framework Core Design 10.0.12
 * Npgsql Entity Framework Core provider 10.0.3
 
@@ -326,7 +330,6 @@ Future versions are expected to introduce:
 * SignalR
 * Blazor
 * Interactive data visualization
-* Docker for future application containerization; currently only PostgreSQL is containerized.
 
 Planned technologies will only be added when the project has a concrete requirement for them.
 
@@ -334,9 +337,12 @@ Planned technologies will only be added when the project has a concrete requirem
 
 ```text
 singular-flow/
+├── .dockerignore
+├── .env.example
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
+├── Dockerfile
 ├── src/
 │   ├── SingularFlow.Api/
 │   │   ├── Contracts/
@@ -443,7 +449,6 @@ singular-flow/
 │       │   └── SingularFlowDbContextModelTests.cs
 │       └── SingularFlow.Infrastructure.Tests.csproj
 ├── .editorconfig
-├── .env.example
 ├── .gitignore
 ├── compose.yaml
 ├── dotnet-tools.json
@@ -452,7 +457,7 @@ singular-flow/
 └── README.md
 ```
 
-`compose.yaml` defines the local PostgreSQL service. `.env.example` is the configuration template; the private `.env` file is ignored and is not part of the project structure.
+`Dockerfile` defines the multi-stage API image, `.dockerignore` restricts its build context, and `compose.yaml` defines the local API and PostgreSQL services. `.env.example` is the safe local configuration template; the private `.env` file is ignored and excluded from the Docker build context. `.github/workflows/ci.yml` performs .NET validation, automated tests, and the API image build.
 
 ## Architecture
 
@@ -460,7 +465,7 @@ The solution currently contains nine projects separated into five production pro
 
 ### Local infrastructure
 
-Docker Compose provisions PostgreSQL through the root `compose.yaml` file. Infrastructure contains the EF Core PostgreSQL model, migration, and repository. The API registers the context and repository at runtime and requires an existing migrated schema for normal simulation requests.
+Docker Compose builds and runs the API alongside PostgreSQL through the root `compose.yaml` file. PostgreSQL remains a separate service, and the API waits for its `pg_isready` health check before starting. Infrastructure contains the EF Core PostgreSQL model, migration, and repository. The API registers the context and repository at runtime and requires an existing migrated schema for normal simulation requests; containerization does not apply migrations automatically.
 
 ### SingularFlow.Domain
 
@@ -497,7 +502,7 @@ Current responsibilities include:
 * Registering ASP.NET Core health-check services and the EF Core check for `SingularFlowDbContext` as `postgresql`, tagged `ready`.
 * Exposing filtered process liveness at `GET /health/live`, database readiness at `GET /health/ready`, and the backward-compatible readiness alias `GET /health`.
 * Generating an OpenAPI document in Development.
-* Applying HTTPS redirection.
+* Applying HTTPS redirection when `HttpsRedirection:Enabled` is true, which is the default.
 * Providing local HTTP and HTTPS launch profiles.
 
 The API depends directly on `SingularFlow.Application` and `SingularFlow.Infrastructure` as the composition root.
@@ -712,13 +717,31 @@ HTTP JSON → SimulationsController                    │
 
 ## Design decisions
 
-### Local PostgreSQL infrastructure
+### Containerized local infrastructure
 
-The Compose service pins `postgres:18.6-alpine3.24` instead of using `latest`; the image supports the project's ARM64 development environment. The `postgres` service uses the container name `singular-flow-postgres` and checks its own container readiness with `pg_isready`. This Compose check is separate from the API's HTTP health endpoints: `/health/ready` checks the API's ability to connect through `SingularFlowDbContext`, while `/health/live` does not check PostgreSQL. Compose currently provisions only PostgreSQL and does not configure health probes for an API container.
+The root `Dockerfile` uses a multi-stage build. Its build stage uses `mcr.microsoft.com/dotnet/sdk:10.0.401-alpine3.24`, matching `global.json`, and passes Docker's target architecture to restore and publish. It copies `global.json` and the API's required project files before the remaining `src` tree so dependency restoration can remain cached when source changes do not affect project dependencies. It restores the API and its referenced projects, then publishes the API in Release configuration to `/app/publish` with `UseAppHost=false`.
 
-The default host binding is loopback-only (`POSTGRES_BIND_ADDRESS=127.0.0.1`). `POSTGRES_PORT` defaults to `5432` and can be changed when that host port is occupied. The database always listens on port `5432` inside the container.
+The runtime stage uses the pinned `mcr.microsoft.com/dotnet/aspnet:10.0.12-alpine3.24` image rather than the full SDK and copies only the published application from the build stage. It installs `krb5-libs`, which supplies the `libgssapi_krb5.so.2` native library required by the PostgreSQL client runtime path on Alpine. The image exposes port `8080`, runs as the built-in non-root `$APP_UID` user, and starts with `dotnet SingularFlow.Api.dll`. Manual runtime verification confirmed the `app` user has UID and GID `1654`.
+
+The selected Microsoft images are multi-platform, and the Dockerfile uses Docker build-platform and target-architecture arguments. The image has been built successfully in the project's ARM64 development environment; this does not imply that every supported architecture has been tested.
+
+The root `.dockerignore` excludes repository content not required for the API build, admitting only the required `global.json` and `src` content and then excluding generated `bin` and `obj` directories and macOS `.DS_Store` files. The private `.env` file is therefore not included in the build context. This keeps the context small, improves build performance, and reduces the risk of copying local configuration into the image; it does not replace proper secret management.
+
+The Compose `api` service uses the repository root as its build context and the root `Dockerfile`, produces the local `singular-flow-api:local` image, and uses the `singular-flow-api` container name with `restart: unless-stopped` and a 30-second stop grace period. It runs with `ASPNETCORE_ENVIRONMENT=Production`, listens for HTTP on container port `8080` through `ASPNETCORE_HTTP_PORTS`, depends on PostgreSQL reaching healthy status, and receives `ConnectionStrings__SingularFlow` through environment configuration rather than baking a connection string into the image.
+
+The PostgreSQL service pins `postgres:18.6-alpine3.24` instead of using `latest`; the image supports the project's ARM64 development environment. It uses the container name `singular-flow-postgres` and checks its own container readiness with `pg_isready`. This check is separate from the API's EF Core readiness check: PostgreSQL health verifies the database service, while `/health/ready` verifies that the application can connect through `SingularFlowDbContext`.
+
+PostgreSQL health runs every 5 seconds with a 5-second timeout, 10 retries, and a 10-second start period. The API image checks readiness every 10 seconds with a 3-second timeout, 3 retries, and a 10-second start period.
+
+The default host bindings are loopback-only. `API_BIND_ADDRESS` and `API_PORT` control host-to-API publication, normally `127.0.0.1:5278` to `api:8080`. `POSTGRES_BIND_ADDRESS` and `POSTGRES_PORT` control host-to-PostgreSQL publication, normally `127.0.0.1:5432` to `postgres:5432`. Inside the Compose network, the API always reaches the database at `postgres:5432`; it does not use the host-published `POSTGRES_PORT`.
 
 The tracked `.env.example` template is separate from the ignored local `.env` file, so local credentials stay out of version control. The named volume `singular-flow-postgres-data` preserves data across container recreation and mounts at `/var/lib/postgresql`, the PostgreSQL 18 data location.
+
+### Configurable HTTPS redirection
+
+HTTPS redirection remains enabled by default, preserving the existing behavior for direct local execution unless configuration overrides it. The Compose API service sets `HttpsRedirection__Enabled=false` because the local container exposes HTTP only; this prevents Kestrel from attempting to redirect to an HTTPS port that does not exist in the container. Manual verification confirmed that the previous `Failed to determine the https port for redirect` warning no longer appears in the container logs.
+
+The local Compose stack does not terminate TLS, and the API container does not serve HTTPS. A future production deployment should normally terminate TLS at an appropriate reverse proxy, ingress, gateway, or hosting platform and must configure and trust forwarded headers correctly.
 
 ### EF Core persistence model
 
@@ -869,6 +892,8 @@ The API uses ASP.NET Core Health Checks and the official `Microsoft.Extensions.D
 These endpoints use the default plain-text health-check response, not JSON. Liveness answers whether the ASP.NET Core process can respond; it is not proof that database-dependent traffic can be served. A PostgreSQL outage therefore leaves liveness healthy because restarting a responsive process does not necessarily repair an external dependency. Readiness fails so a load balancer or orchestrator can stop routing database-dependent traffic. The compatibility endpoint is retained to avoid breaking existing users and scripts, but now has the same readiness semantics as `/health/ready`.
 
 Readiness verifies database connectivity only. It does not validate that migrations are current or that the complete schema is correct.
+
+The Dockerfile health check uses Alpine's available `wget` implementation to call `http://127.0.0.1:8080/health/ready`. Docker therefore marks the API container healthy only after the process is running and PostgreSQL connectivity succeeds, allowing `docker compose up --wait` to wait for both database and API readiness. Periodic evaluation can produce lightweight `SELECT 1` connectivity queries in EF Core logs; these are expected health-check activity, not simulation queries or persistence failures.
 
 ### Development OpenAPI document
 
@@ -1037,7 +1062,7 @@ Install the following software before building the project:
 * .NET 10 SDK
 * Git
 
-Docker Desktop and Docker Compose are required to run the API locally and to execute the full test suite, which includes database integration tests.
+Docker Desktop and Docker Compose are required to run the complete containerized stack. Docker-hosted PostgreSQL is also used by the documented full test-suite workflow, which includes database integration tests.
 
 Check the installed .NET SDK:
 
@@ -1053,9 +1078,9 @@ The project currently uses:
 
 The required SDK family is declared in `global.json`.
 
-## Local PostgreSQL
+## Local Docker Compose stack
 
-The root `compose.yaml` provisions PostgreSQL only. Its pinned `postgres:18.6-alpine3.24` image supports ARM64. Docker Compose configuration has been validated, PostgreSQL has been verified healthy, data persistence across container recreation has been manually verified, and the EF Core schema has been manually applied and verified locally.
+The root `compose.yaml` builds the ASP.NET Core API and runs it with the separate pinned PostgreSQL service. The complete stack has been manually verified with both containers healthy, the API running in Production as the non-root `app` user, HTTP listening on container port `8080`, and the host publishing the API at `127.0.0.1:5278`. The persisted simulation create, list, retrieve, delete, and subsequent GET `404` workflow was also verified through the containerized API, including clean removal of the temporary simulation.
 
 Copy the environment template:
 
@@ -1065,24 +1090,75 @@ cp .env.example .env
 
 Replace the example password in `.env` with a private local password. Never commit `.env`.
 
-Validate the Compose configuration, download the pinned image, and start PostgreSQL:
+The safe template defines `API_BIND_ADDRESS=127.0.0.1` and `API_PORT=5278` for host-to-API traffic, plus `POSTGRES_BIND_ADDRESS=127.0.0.1` and `POSTGRES_PORT=5432` for host-to-database traffic. `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` configure PostgreSQL. Compose constructs `ConnectionStrings__SingularFlow` for the API with the internal hostname and port `postgres:5432`; ASP.NET Core maps the double underscore to `ConnectionStrings:SingularFlow`. The connection string is supplied at container runtime, not stored in the image.
+
+Validate the Compose configuration:
 
 ```bash
-docker compose config --quiet
-docker compose pull
-docker compose up -d
+docker compose config \
+  --quiet
 ```
 
-Inspect service health and recent logs:
+Build the API image directly:
+
+```bash
+docker build \
+  --tag singular-flow-api:local \
+  .
+```
+
+Build it through Compose:
+
+```bash
+docker compose build \
+  api
+```
+
+Manual verification covered Compose configuration validation, both direct and Compose image builds, and successful multi-stage image construction. It also confirmed that installing `krb5-libs` removes the previous missing `libgssapi_krb5.so.2` runtime warning.
+
+Start the complete stack and wait up to 60 seconds for PostgreSQL and API health:
+
+```bash
+docker compose up \
+  --detach \
+  --wait \
+  --wait-timeout 60
+```
+
+Compose waits for PostgreSQL's `pg_isready` check before starting the API, then waits for the API's `/health/ready` check. Inspect both services and the API logs:
 
 ```bash
 docker compose ps
-docker compose logs postgres --tail 20
+docker compose logs \
+  api \
+  --tail 30
 ```
 
-The default port mapping is `127.0.0.1:${POSTGRES_PORT}` on the host to PostgreSQL port `5432` inside the container. `POSTGRES_BIND_ADDRESS` controls the host binding and defaults to `127.0.0.1`; `POSTGRES_PORT` defaults to `5432`. If host port `5432` is occupied, set `POSTGRES_PORT=5433` in the private `.env` file. Port `5433` is an optional local setting, not a project default.
+Verify liveness, readiness, and a representative persisted collection request:
 
-Load the private values and configure the API connection for the current shell. This uses the configured `POSTGRES_PORT` rather than assuming port `5432`:
+```bash
+curl \
+  --silent \
+  --show-error \
+  --fail \
+  http://127.0.0.1:5278/health/live
+
+curl \
+  --silent \
+  --show-error \
+  --fail \
+  http://127.0.0.1:5278/health/ready
+
+curl \
+  --silent \
+  --show-error \
+  --fail \
+  'http://127.0.0.1:5278/api/simulations?page=1&pageSize=1'
+```
+
+These URLs assume the `.env.example` defaults. If `API_BIND_ADDRESS` or `API_PORT` changes, use the corresponding host address. `POSTGRES_PORT` affects host-to-database tools only; it does not change the API's internal `postgres:5432` connection.
+
+For direct, non-container API execution, load the private values and configure the connection for the current shell. This path uses the configured host-published `POSTGRES_PORT` rather than assuming port `5432`:
 
 ```bash
 set -a
@@ -1091,7 +1167,7 @@ set +a
 export ConnectionStrings__SingularFlow="Host=${POSTGRES_BIND_ADDRESS:-127.0.0.1};Port=${POSTGRES_PORT:-5432};Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
 ```
 
-ASP.NET Core maps `ConnectionStrings__SingularFlow` to `ConnectionStrings:SingularFlow`. Keep the value in the shell environment and the ignored `.env`; do not print it or commit `.env`.
+Keep the value in the shell environment and the ignored `.env`; do not print it or commit `.env`.
 
 Open `psql` inside the container:
 
@@ -1102,21 +1178,22 @@ docker compose exec postgres \
   --dbname singular_flow
 ```
 
-Stop the container while preserving data in the named volume `singular-flow-postgres-data`:
+Stop the stack while preserving data in the named volume `singular-flow-postgres-data`:
 
 ```bash
 docker compose down
 ```
 
-The following command is destructive to local database data because it removes the volume:
+Do not confuse that command with the following destructive variant, which removes the named volume and deletes locally persisted database data:
 
 ```bash
-docker compose down --volumes
+docker compose down \
+  --volumes
 ```
 
 `GET /health/live` does not require a successful database connection. `GET /health/ready` and the compatibility `GET /health` require the configured PostgreSQL endpoint to be reachable; a missing or unreachable connection causes readiness to fail. Normal persisted simulation operations still require the migrated schema. Startup registers the context but deliberately does not apply migrations automatically, and readiness does not apply migrations or validate that the schema is current.
 
-The database-aware health checks introduce no EF Core model or schema changes and require no migration. The API requires the same configured PostgreSQL connection and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, collection `GET /api/simulations`, and `DELETE /api/simulations/{id}`.
+API containerization and the database-aware health checks introduce no EF Core model or schema changes and require no migration. Neither Compose nor the Dockerfile creates the database schema or applies migrations. The API requires the same configured PostgreSQL connection and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, collection `GET /api/simulations`, and `DELETE /api/simulations/{id}`.
 
 ## EF Core migrations and database schema
 
@@ -1190,7 +1267,7 @@ Do not use `--no-restore` immediately after modifying project references unless 
 
 ## Run
 
-See [Local PostgreSQL](#local-postgresql) to start PostgreSQL, configure `ConnectionStrings__SingularFlow`, and apply the schema before running the API. The CLI does not require PostgreSQL.
+See [Local Docker Compose stack](#local-docker-compose-stack) to run the complete containerized stack or configure PostgreSQL for direct execution. The schema must be applied before normal persistence operations; the CLI does not require PostgreSQL.
 
 Run the command-line application:
 
@@ -1214,7 +1291,7 @@ dotnet run \
   --project src/SingularFlow.Api/SingularFlow.Api.csproj
 ```
 
-The local development launch profiles use HTTP on port `5278` and HTTPS on port `7020`. These defaults are configured in `launchSettings.json`.
+The local development launch profiles use HTTP on port `5278` and HTTPS on port `7020`. These defaults are configured in `launchSettings.json`, and HTTPS redirection is enabled by default. The Production Compose service instead exposes HTTP on the configured host binding and disables HTTPS redirection.
 
 Request process liveness over HTTP:
 
@@ -1249,6 +1326,8 @@ The Development OpenAPI document is available at:
 ```text
 http://localhost:5278/openapi/v1.json
 ```
+
+OpenAPI is mapped only in the Development environment. The Compose API service runs in Production, so `/openapi/v1.json` is not exposed there.
 
 Run a logarithmic simulation:
 
@@ -1346,15 +1425,17 @@ GitHub Actions validates every pull request targeting `main` and every push to `
 
 The workflow performs the following steps:
 
-1. Start a temporary PostgreSQL service with a dedicated `singular_flow_tests` database.
+1. Start a temporary PostgreSQL service with a dedicated `singular_flow_tests` database and wait for its `pg_isready` health check.
 2. Check out the repository.
 3. Install the .NET SDK declared in `global.json`.
-4. Restore dependencies.
-5. Verify code formatting.
-6. Build the solution in Release mode.
-7. Run all automated tests with `SINGULARFLOW_TEST_CONNECTION_STRING` configured from the service's assigned host port.
+4. Display .NET information.
+5. Restore the solution.
+6. Verify code formatting.
+7. Build the solution in Release mode.
+8. Build the API Docker image from the root `Dockerfile` as `singular-flow-api:ci`.
+9. Run all automated tests with `SINGULARFLOW_TEST_CONNECTION_STRING` configured from the service's assigned host port.
 
-The temporary PostgreSQL service is also used by the database-readiness integration tests. The existing service and dedicated test connection already support this coverage, so no CI workflow change is required for the health-check feature.
+The temporary PostgreSQL service is used by the persistence and database-readiness integration tests. The Docker build step validates that the Dockerfile continues to build successfully. CI does not start the local Compose stack, run tests inside the API image, publish the image to a registry, or deploy the application.
 
 The `main` branch is protected by a GitHub ruleset. Changes are integrated through pull requests after the required continuous-integration check succeeds.
 
@@ -1485,9 +1566,10 @@ The project is developed incrementally.
 
 ### Phase 9 — Deployment
 
-PostgreSQL is containerized for local development; the .NET application is not yet containerized.
+The API and PostgreSQL are containerized as a complete local Docker Compose stack. Public deployment and production hosting remain future work.
 
-* [ ] Containerize the application with Docker.
+* [x] Containerize the API with a multi-stage Docker build.
+* [x] Run the API and PostgreSQL together through Docker Compose.
 * [ ] Add the required infrastructure services.
 * [ ] Deploy the application.
 * [ ] Document the production environment.
