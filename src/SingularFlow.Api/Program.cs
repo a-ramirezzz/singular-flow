@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 
 using SingularFlow.Api.ErrorHandling;
@@ -8,7 +9,11 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
-builder.Services.AddHealthChecks();
+builder.Services
+    .AddHealthChecks()
+    .AddDbContextCheck<SingularFlowDbContext>(
+        name: "postgresql",
+        tags: ["ready"]);
 builder.Services.AddProblemDetails();
 
 builder.Services
@@ -53,7 +58,30 @@ app.UseHttpsRedirection();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHealthChecks("/health");
+app.MapHealthChecks(
+    "/health/live",
+    new HealthCheckOptions
+    {
+        Predicate = _ => false
+    });
+
+app.MapHealthChecks(
+    "/health/ready",
+    new HealthCheckOptions
+    {
+        Predicate =
+            healthCheck =>
+                healthCheck.Tags.Contains("ready")
+    });
+
+app.MapHealthChecks(
+    "/health",
+    new HealthCheckOptions
+    {
+        Predicate =
+            healthCheck =>
+                healthCheck.Tags.Contains("ready")
+    });
 
 app.Run();
 

@@ -14,7 +14,7 @@ The current version calculates individual vortex-core scaling states and generat
 
 Application orchestration is separated from the mathematical domain through a dedicated use case. The command-line interface creates a simulation request, delegates execution to the application layer, and displays the structured result.
 
-The ASP.NET Core Web API supports creation, paginated listing, retrieval by ID, and deletion of persisted simulations. It executes simulations over HTTP with uniform or logarithmic sampling, exposes a health-check endpoint, and generates an OpenAPI document in Development. Invalid requests receive standardized HTTP errors.
+The ASP.NET Core Web API supports creation, paginated listing, retrieval by ID, and deletion of persisted simulations. It executes simulations over HTTP with uniform or logarithmic sampling, exposes separate process-liveness and database-readiness health checks, and generates an OpenAPI document in Development. Invalid requests receive standardized HTTP errors.
 
 The command-line application currently uses logarithmic remaining-time sampling to provide greater resolution near the configured singular time.
 
@@ -45,10 +45,10 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, API, and Infrastructure behavior with 92 automated tests: 42 Domain, 14 Application, 20 API, and 16 Infrastructure tests.
+* Verify domain, application, API, and Infrastructure behavior with 95 automated tests: 42 Domain, 14 Application, 23 API, and 16 Infrastructure tests.
 * Validate every pull request and push to `main` with GitHub Actions.
 * Host an ASP.NET Core Web API.
-* Expose an operational health-check endpoint.
+* Expose `GET /health/live` for process liveness, `GET /health/ready` for PostgreSQL connectivity readiness, and `GET /health` as a backward-compatible readiness alias.
 * Generate an OpenAPI 3.1.1 document in Development.
 * Test the real ASP.NET Core HTTP pipeline in memory.
 * Create persisted simulations through `POST /api/simulations` with `uniform` or `logarithmic` sampling.
@@ -304,7 +304,9 @@ Sample count: 6
 * .NET 10
 * ASP.NET Core Web API
 * ASP.NET Core Health Checks
+* EF Core `DbContext` health-check integration with tagged readiness and filtered liveness checks
 * Microsoft.AspNetCore.OpenApi
+* Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore 10.0.12
 * Microsoft.AspNetCore.Mvc.Testing
 * xUnit
 * Git
@@ -402,6 +404,7 @@ singular-flow/
 ├── tests/
 │   ├── SingularFlow.Api.Tests/
 │   │   ├── Health/
+│   │   │   ├── DatabaseHealthEndpointTests.cs
 │   │   │   └── HealthEndpointTests.cs
 │   │   ├── OpenApi/
 │   │   │   └── OpenApiEndpointTests.cs
@@ -491,8 +494,8 @@ Current responsibilities include:
 * Binding `ISimulationRepository` to `EfSimulationRepository`.
 * Producing standardized HTTP errors for invalid requests.
 * Registering OpenAPI generation.
-* Registering ASP.NET Core health-check services.
-* Exposing `GET /health`.
+* Registering ASP.NET Core health-check services and the EF Core check for `SingularFlowDbContext` as `postgresql`, tagged `ready`.
+* Exposing filtered process liveness at `GET /health/live`, database readiness at `GET /health/ready`, and the backward-compatible readiness alias `GET /health`.
 * Generating an OpenAPI document in Development.
 * Applying HTTPS redirection.
 * Providing local HTTP and HTTPS launch profiles.
@@ -617,12 +620,16 @@ The test project depends directly on `SingularFlow.Application`.
 
 ### SingularFlow.Api.Tests
 
-Contains integration tests for the ASP.NET Core host, including one database-backed end-to-end test.
+Contains integration tests for the ASP.NET Core host, including database-backed endpoint tests.
 
-The twenty API tests verify:
+`HealthEndpointTests.cs` covers database-independent liveness. `DatabaseHealthEndpointTests.cs` covers healthy readiness and compatibility behavior against PostgreSQL, plus the separation between liveness and readiness when that dependency is unavailable.
 
-* `GET /health` returns `200 OK` and `Healthy`.
-* The Development OpenAPI document contains the API metadata, collection pagination parameters, and documented simulation operations and responses.
+The twenty-three API tests verify:
+
+* `GET /health/live` returns `200 OK` and plain-text `Healthy` without connecting to PostgreSQL.
+* `GET /health/ready` and the compatibility `GET /health` return `200 OK` and plain-text `Healthy` when the configured `singular_flow_tests` PostgreSQL database is available.
+* Liveness remains `200 Healthy` when a deliberately unreachable local PostgreSQL port is configured, while readiness returns `503 Unhealthy` and the compatibility endpoint returns `503`.
+* The Development OpenAPI document contains the API metadata, collection pagination parameters, and documented simulation operations and responses while excluding `/health`, `/health/live`, and `/health/ready`.
 * Valid logarithmic and uniform simulation requests return `201 Created`, resource identity, creation timestamp, and a resource location.
 * Unsupported sampling modes and invalid concentration exponents return `400 ProblemDetails`.
 * Missing sampling modes and malformed JSON return `400 ValidationProblemDetails`.
@@ -632,7 +639,7 @@ The twenty API tests verify:
 * Collection queries return summary fields and pagination metadata, use default query values, omit states, and reject invalid pagination with `400 Bad Request`.
 * The actual HTTP-to-PostgreSQL path creates a simulation, follows its `Location`, retrieves its configuration and ordered states, lists its summary, deletes it, observes a subsequent GET `404`, and verifies that neither the simulation nor its states remain.
 
-The contract and validation tests use `WebApplicationFactory<Program>` with a test repository, so they execute the real HTTP pipeline without requiring PostgreSQL. The dedicated database endpoint test retains the production repository, applies pending migrations, and deletes its inserted simulation afterward.
+The contract and validation tests use `WebApplicationFactory<Program>` with a test repository, so they execute the real HTTP pipeline without requiring PostgreSQL. The simulation database endpoint test retains the production repository, applies pending migrations, and deletes its inserted simulation afterward. The readiness tests use the dedicated `singular_flow_tests` connection and guard against another database name; the dependency-failure case substitutes an unreachable local port with short timeouts and does not stop the PostgreSQL container or mutate the test database.
 
 The test project depends directly on `SingularFlow.Api`.
 
@@ -707,7 +714,7 @@ HTTP JSON → SimulationsController                    │
 
 ### Local PostgreSQL infrastructure
 
-The Compose service pins `postgres:18.6-alpine3.24` instead of using `latest`; the image supports the project's ARM64 development environment. The `postgres` service uses the container name `singular-flow-postgres` and checks readiness with `pg_isready`.
+The Compose service pins `postgres:18.6-alpine3.24` instead of using `latest`; the image supports the project's ARM64 development environment. The `postgres` service uses the container name `singular-flow-postgres` and checks its own container readiness with `pg_isready`. This Compose check is separate from the API's HTTP health endpoints: `/health/ready` checks the API's ability to connect through `SingularFlowDbContext`, while `/health/live` does not check PostgreSQL. Compose currently provisions only PostgreSQL and does not configure health probes for an API container.
 
 The default host binding is loopback-only (`POSTGRES_BIND_ADDRESS=127.0.0.1`). `POSTGRES_PORT` defaults to `5432` and can be changed when that host port is occupied. The database always listens on port `5432` inside the container.
 
@@ -851,15 +858,23 @@ POST creates a persisted simulation resource and returns `201 Created` with its 
 
 ### Operational health check
 
-The `/health` endpoint uses the built-in ASP.NET Core health-check infrastructure.
+The API uses ASP.NET Core Health Checks and the official `Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore` 10.0.12 package to distinguish process liveness from database readiness. The `postgresql` EF Core check for `SingularFlowDbContext` is tagged `ready`; the readiness endpoints select that tag, while the liveness endpoint filters out registered checks and does not attempt to connect to PostgreSQL.
 
-It returns `200 OK` with `Healthy` while all registered checks report a healthy status.
+| Endpoint | Purpose | PostgreSQL check | Healthy response | Database unavailable |
+|---|---|---:|---|---|
+| `GET /health/live` | Process liveness | No | `200 Healthy` | Still `200 Healthy` if the process responds |
+| `GET /health/ready` | Database readiness | Yes | `200 Healthy` | `503 Unhealthy` |
+| `GET /health` | Backward-compatible readiness alias | Yes | `200 Healthy` | `503` |
+
+These endpoints use the default plain-text health-check response, not JSON. Liveness answers whether the ASP.NET Core process can respond; it is not proof that database-dependent traffic can be served. A PostgreSQL outage therefore leaves liveness healthy because restarting a responsive process does not necessarily repair an external dependency. Readiness fails so a load balancer or orchestrator can stop routing database-dependent traffic. The compatibility endpoint is retained to avoid breaking existing users and scripts, but now has the same readiness semantics as `/health/ready`.
+
+Readiness verifies database connectivity only. It does not validate that migrations are current or that the complete schema is correct.
 
 ### Development OpenAPI document
 
 OpenAPI generation is enabled only in the Development environment and currently produces an OpenAPI 3.1.1 document.
 
-The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, `GET /api/simulations/{id}` with `200` and `404`, and `DELETE /api/simulations/{id}` with `204` and `404`. The infrastructure health endpoint is intentionally not included as a controller operation.
+The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, `GET /api/simulations/{id}` with `200` and `404`, and `DELETE /api/simulations/{id}` with `204` and `404`. The operational endpoints `/health`, `/health/live`, and `/health/ready` are intentionally excluded because they are mapped health checks rather than controller operations.
 
 ### In-memory API testing
 
@@ -1099,7 +1114,9 @@ The following command is destructive to local database data because it removes t
 docker compose down --volumes
 ```
 
-The API requires the same configured PostgreSQL connection and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, collection `GET /api/simulations`, and `DELETE /api/simulations/{id}`. Startup registers the context but deliberately does not apply migrations automatically. Collection listing and deletion reuse the existing schema, so this feature introduces no schema changes and requires no new migration.
+`GET /health/live` does not require a successful database connection. `GET /health/ready` and the compatibility `GET /health` require the configured PostgreSQL endpoint to be reachable; a missing or unreachable connection causes readiness to fail. Normal persisted simulation operations still require the migrated schema. Startup registers the context but deliberately does not apply migrations automatically, and readiness does not apply migrations or validate that the schema is current.
+
+The database-aware health checks introduce no EF Core model or schema changes and require no migration. The API requires the same configured PostgreSQL connection and an applied schema for `POST /api/simulations`, `GET /api/simulations/{id}`, collection `GET /api/simulations`, and `DELETE /api/simulations/{id}`.
 
 ## EF Core migrations and database schema
 
@@ -1199,15 +1216,29 @@ dotnet run \
 
 The local development launch profiles use HTTP on port `5278` and HTTPS on port `7020`. These defaults are configured in `launchSettings.json`.
 
-Request the operational health endpoint over HTTP:
+Request process liveness over HTTP:
 
 ```bash
 curl \
+  --silent \
+  --show-error \
   --include \
-  http://localhost:5278/health
+  http://localhost:5278/health/live
 ```
 
-The expected response body is:
+Request database readiness over HTTP:
+
+```bash
+curl \
+  --silent \
+  --show-error \
+  --include \
+  http://localhost:5278/health/ready
+```
+
+Both endpoints return a plain-text `Healthy` body when healthy. Liveness can remain healthy while readiness fails: readiness requires a valid configured PostgreSQL connection, whereas liveness only reports that the ASP.NET Core process responds. `GET /health` remains available as a backward-compatible readiness alias.
+
+The expected healthy response body is:
 
 ```text
 Healthy
@@ -1244,7 +1275,7 @@ curl --include http://localhost:5278/api/simulations \
   --data '{"singularTime":1.0,"concentrationExponent":0.005,"startTime":0.0,"endTime":0.9999,"sampleCount":6,"samplingMode":"adaptive"}'
 ```
 
-`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for health, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, malformed JSON, persisted simulation retrieval, and deletion based on `SimulationId`.
+`src/SingularFlow.Api/SingularFlow.Api.http` contains reusable requests for liveness, readiness, the compatibility health endpoint, OpenAPI, logarithmic and uniform simulations, an unsupported sampling mode, malformed JSON, persisted simulation retrieval, and deletion based on `SimulationId`.
 
 ## Test
 
@@ -1282,14 +1313,14 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The solution currently contains 92 automated tests distributed across:
+The solution currently contains 95 automated tests distributed across:
 
 * 42 Domain unit tests.
 * 14 Application unit tests.
-* 20 API tests.
+* 23 API tests.
 * 16 Infrastructure tests.
 
-The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, total-page calculation, and deletion delegation with Boolean-result, ID, and cancellation-token propagation. The API tests cover health, OpenAPI operations, response codes and pagination parameter names, valid logarithmic and uniform requests, request failures, persistence delegation, existing and missing resource queries and deletions, default and explicit pagination, summary fields and metadata, omission of state collections, invalid pagination responses, and the real HTTP-to-PostgreSQL lifecycle. That integration test verifies creation, retrieval, listing, deletion, a subsequent GET `404`, and direct database confirmation that both the simulation and its child states are gone. HTTP contract, validation, query, and deletion tests substitute a test repository; only the dedicated database endpoint test uses PostgreSQL.
+The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, total-page calculation, and deletion delegation with Boolean-result, ID, and cancellation-token propagation. The API tests cover healthy liveness, healthy readiness against `singular_flow_tests`, the compatibility `/health` endpoint, database-unavailable behavior, liveness remaining healthy during dependency failure, readiness returning `503`, health endpoints remaining outside OpenAPI, documented simulation operations, response codes and pagination parameter names, valid requests, request failures, persistence delegation, resource queries and deletions, pagination, and the real HTTP-to-PostgreSQL lifecycle. The unavailable-database test uses a deliberately unreachable local port with short timeouts; it does not stop Docker or mutate the test database. The simulation lifecycle test verifies creation, retrieval, listing, deletion, a subsequent GET `404`, and direct database confirmation that both the simulation and its child states are gone.
 
 Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration tests connect to the dedicated test database and verify saving, detailed querying, ordered state reconstruction, a nullable result for a missing ID, total count, offset pagination, stable newest-first ordering, summary projection, later pages, out-of-range pages, physical deletion with cascade removal of states, and `false` for a missing deletion ID. Inserted repository data is contained in reversible transactions.
 
@@ -1322,6 +1353,8 @@ The workflow performs the following steps:
 5. Verify code formatting.
 6. Build the solution in Release mode.
 7. Run all automated tests with `SINGULARFLOW_TEST_CONNECTION_STRING` configured from the service's assigned host port.
+
+The temporary PostgreSQL service is also used by the database-readiness integration tests. The existing service and dedicated test connection already support this coverage, so no CI workflow change is required for the health-check feature.
 
 The `main` branch is protected by a GitHub ruleset. Changes are integrated through pull requests after the required continuous-integration check succeeds.
 
@@ -1401,7 +1434,7 @@ The project is developed incrementally.
 ### Phase 4 — Web API
 
 * [x] Create an ASP.NET Core Web API.
-* [x] Add an operational health-check endpoint.
+* [x] Add database-aware process-liveness and PostgreSQL-readiness endpoints, retaining `/health` as a compatibility alias.
 * [x] Generate an OpenAPI document in Development.
 * [x] Add API integration-test infrastructure.
 * [x] Add a simulation REST endpoint.
