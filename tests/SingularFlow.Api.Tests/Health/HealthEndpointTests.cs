@@ -21,10 +21,11 @@ public sealed class HealthEndpointTests :
     }
 
     [Fact]
-    public async Task GetHealth_ReturnsHealthyResponse()
+    public async Task GetLiveness_ReturnsHealthyResponse()
     {
-        HttpResponseMessage response =
-            await _client.GetAsync("/health");
+        using HttpResponseMessage response =
+            await _client.GetAsync(
+                "/health/live");
 
         string content =
             await response.Content.ReadAsStringAsync();

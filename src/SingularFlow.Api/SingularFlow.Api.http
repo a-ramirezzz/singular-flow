@@ -1,7 +1,17 @@
 @SingularFlow.Api_HostAddress = http://localhost:5278
 @SimulationId = replace-with-a-simulation-id
 
-### Health check
+### Liveness health check
+
+GET {{SingularFlow.Api_HostAddress}}/health/live
+Accept: text/plain
+
+### Readiness health check
+
+GET {{SingularFlow.Api_HostAddress}}/health/ready
+Accept: text/plain
+
+### Compatibility readiness health check
 
 GET {{SingularFlow.Api_HostAddress}}/health
 Accept: text/plain

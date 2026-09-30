@@ -59,9 +59,27 @@ public sealed class OpenApiEndpointTests :
             "SingularFlow.Api | v1",
             title);
 
+        JsonElement paths =
+    root.GetProperty("paths");
+
         Assert.Equal(
             JsonValueKind.Object,
-            root.GetProperty("paths").ValueKind);
+            paths.ValueKind);
+
+        Assert.False(
+            paths.TryGetProperty(
+                "/health",
+                out _));
+
+        Assert.False(
+            paths.TryGetProperty(
+                "/health/live",
+                out _));
+
+        Assert.False(
+            paths.TryGetProperty(
+                "/health/ready",
+                out _));
     }
 
     [Fact]
