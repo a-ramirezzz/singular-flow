@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using SingularFlow.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using SingularFlow.Infrastructure.Persistence;
 namespace SingularFlow.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(SingularFlowDbContext))]
-    partial class SingularFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261002042411_AddSimulationJobs")]
+    partial class AddSimulationJobs
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

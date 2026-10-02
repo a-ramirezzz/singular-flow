@@ -15,6 +15,9 @@ public sealed class SingularFlowDbContext : DbContext
     public DbSet<SimulationEntity> Simulations =>
         Set<SimulationEntity>();
 
+    public DbSet<SimulationJobEntity> SimulationJobs =>
+        Set<SimulationJobEntity>();
+
     public DbSet<SimulationStateEntity> SimulationStates =>
         Set<SimulationStateEntity>();
 

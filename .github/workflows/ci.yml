@@ -63,6 +63,21 @@ jobs:
           --configuration Release
           --no-restore
 
+      - name: Restore local .NET tools
+        run: dotnet tool restore
+
+      - name: Apply test database migrations
+        env:
+          SINGULARFLOW_TEST_CONNECTION_STRING: Host=127.0.0.1;Port=${{ job.services.postgres.ports[5432] }};Database=singular_flow_tests;Username=singular_flow;Password=ci_test_password
+        run: >
+          dotnet ef database update
+          --project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj
+          --startup-project src/SingularFlow.Infrastructure/SingularFlow.Infrastructure.csproj
+          --context SingularFlowDbContext
+          --configuration Release
+          --no-build
+          --connection "$SINGULARFLOW_TEST_CONNECTION_STRING"
+
       - name: Build API container image
         run: >
           docker build
