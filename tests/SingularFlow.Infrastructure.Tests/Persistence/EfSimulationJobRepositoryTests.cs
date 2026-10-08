@@ -12,6 +12,30 @@ namespace SingularFlow.Infrastructure.Tests.Persistence;
 public sealed class EfSimulationJobRepositoryTests
 {
     [Fact]
+    public async Task CreateAsync_NullRequest_ThrowsArgumentNullException()
+    {
+        DbContextOptions<SingularFlowDbContext> options =
+            new DbContextOptionsBuilder<SingularFlowDbContext>()
+                .Options;
+
+        await using SingularFlowDbContext context =
+            new(options);
+
+        EfSimulationJobRepository repository = new(
+            context);
+
+        ArgumentNullException exception =
+            await Assert.ThrowsAsync<ArgumentNullException>(
+                () => repository.CreateAsync(
+                    null!,
+                    CancellationToken.None));
+
+        Assert.Equal(
+            "request",
+            exception.ParamName);
+    }
+
+    [Fact]
     public async Task CreateAsync_ValidRequest_PersistsAndRoundTripsPendingJob()
     {
         string connectionString = GetTestConnectionString();

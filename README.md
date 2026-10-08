@@ -49,7 +49,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, API, and Infrastructure behavior with 104 automated tests: 42 Domain, 16 Application, 23 API, and 23 Infrastructure tests.
+* Verify domain, application, API, and Infrastructure behavior with 105 automated tests: 42 Domain, 16 Application, 23 API, and 24 Infrastructure tests.
 * Validate every pull request and push to `main` with GitHub Actions, including a build of the API Docker image.
 * Host an ASP.NET Core Web API.
 * Expose `GET /health/live` for process liveness, `GET /health/ready` for PostgreSQL connectivity readiness, and `GET /health` as a backward-compatible readiness alias.
@@ -675,11 +675,11 @@ The test project depends directly on `SingularFlow.Api`.
 
 ### SingularFlow.Infrastructure.Tests
 
-Contains 23 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
+Contains 24 automated tests for EF Core model metadata, design-time context creation, and repository persistence.
 
 The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. Repository integration tests also verify total count, page metadata, stable descending ordering, first and later pages, summary projection, an out-of-range page with empty items and the original total count, deletion of an existing simulation and its states, and `false` for a missing deletion ID. The database tests apply pending migrations and use reversible transactions for inserted repository data.
 
-Job metadata tests cover the entity's default `Pending` status, table and column mappings, PostgreSQL types, string enum conversions, generated UUID and timestamp behavior, all six check constraints including the exact status constraint, the composite index, the absence of job-to-simulation relationships, and retention of the existing simulation/state mappings. PostgreSQL repository tests cover creation of a `Pending` job, all request fields, generated identity and timestamp, round-trip request reconstruction, no-tracking and missing-ID retrieval, and the absence of completed simulation or state creation. They require the database name to be exactly `singular_flow_tests` and contain changes in transactions that are rolled back.
+Job metadata tests cover the entity's default `Pending` status, table and column mappings, PostgreSQL types, string enum conversions, generated UUID and timestamp behavior, all six check constraints including the exact status constraint, the composite index, the absence of job-to-simulation relationships, and retention of the existing simulation/state mappings. Repository tests cover rejection of null job-creation requests without database access. PostgreSQL repository tests cover creation of a `Pending` job, all request fields, generated identity and timestamp, round-trip request reconstruction, no-tracking and missing-ID retrieval, and the absence of completed simulation or state creation. They require the database name to be exactly `singular_flow_tests` and contain changes in transactions that are rolled back.
 
 The test project depends directly on `SingularFlow.Infrastructure`.
 
@@ -1439,16 +1439,16 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The verified suite contains 104 automated test cases: 104 passed, 0 failed, and 0 were skipped. They are distributed across:
+The solution contains 105 automated test cases. They are distributed across:
 
 * 42 Domain unit tests.
 * 16 Application unit tests.
 * 23 API tests.
-* 23 Infrastructure tests.
+* 24 Infrastructure tests.
 
 The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, total-page calculation, deletion delegation with Boolean-result, ID, and cancellation-token propagation, job-handler delegation and exact forwarding, exact job-result propagation, and stable lifecycle enum names and numeric values. The API tests cover healthy liveness, healthy readiness against `singular_flow_tests`, the compatibility `/health` endpoint, database-unavailable behavior, liveness remaining healthy during dependency failure, readiness returning `503`, health endpoints remaining outside OpenAPI, documented simulation operations, response codes and pagination parameter names, valid requests, request failures, persistence delegation, resource queries and deletions, pagination, and the real HTTP-to-PostgreSQL lifecycle. The unavailable-database test uses a deliberately unreachable local port with short timeouts; it does not stop Docker or mutate the test database. The simulation lifecycle test verifies creation, retrieval, listing, deletion, a subsequent GET `404`, and direct database confirmation that both the simulation and its child states are gone.
 
-Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. The repository integration tests connect to the dedicated test database and verify simulation persistence behavior plus job creation, complete request-field persistence, generated identity and timestamp, round-trip reconstruction, no-tracking retrieval, missing-ID behavior, and no completed simulation or state creation. The test-database guard requires `singular_flow_tests`; inserted repository data is contained in reversible transactions and cleaned up through rollback. These counts describe executed test cases, not migration-generation or manual validation commands.
+Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. Repository tests also reject null job-creation requests without database access. The repository integration tests connect to the dedicated test database and verify simulation persistence behavior plus job creation, complete request-field persistence, generated identity and timestamp, round-trip reconstruction, no-tracking retrieval, missing-ID behavior, and no completed simulation or state creation. The test-database guard requires `singular_flow_tests`; inserted repository data is contained in reversible transactions and cleaned up through rollback. These counts describe test cases, not migration-generation or manual validation commands.
 
 ## Code formatting
 
