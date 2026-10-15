@@ -11,4 +11,7 @@ public interface ISimulationJobRepository
     Task<SimulationJobResult?> GetByIdAsync(
         Guid id,
         CancellationToken cancellationToken);
+
+    Task<SimulationJobResult?> ClaimNextPendingAsync(
+        CancellationToken cancellationToken);
 }

@@ -6,4 +6,5 @@ public sealed record SimulationJobResult(
     Guid Id,
     RunSimulationRequest Request,
     SimulationJobStatus Status,
-    DateTimeOffset CreatedAtUtc);
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset? ClaimedAtUtc);

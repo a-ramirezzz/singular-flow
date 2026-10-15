@@ -23,4 +23,6 @@ public sealed class SimulationJobEntity
         SimulationJobStatus.Pending;
 
     public DateTimeOffset CreatedAtUtc { get; set; }
+
+    public DateTimeOffset? ClaimedAtUtc { get; set; }
 }

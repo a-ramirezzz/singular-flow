@@ -105,6 +105,11 @@ internal sealed class SimulationJobEntityConfiguration :
             .IsRequired();
 
         builder
+            .Property(job => job.ClaimedAtUtc)
+            .HasColumnName("claimed_at_utc")
+            .HasColumnType("timestamp with time zone");
+
+        builder
             .HasIndex(job => new
             {
                 job.Status,

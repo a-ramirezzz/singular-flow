@@ -88,6 +88,10 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<DateTimeOffset?>("ClaimedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("claimed_at_utc");
+
                     b.Property<double>("ConcentrationExponent")
                         .HasColumnType("double precision")
                         .HasColumnName("concentration_exponent");

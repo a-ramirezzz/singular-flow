@@ -34,7 +34,8 @@ public sealed class CreateSimulationJobHandlerTests
             Id: JobId,
             Request: request,
             Status: SimulationJobStatus.Pending,
-            CreatedAtUtc: CreatedAtUtc);
+            CreatedAtUtc: CreatedAtUtc,
+            ClaimedAtUtc: null);
 
         RecordingSimulationJobRepository repository = new(
             repositoryResult);
@@ -120,6 +121,12 @@ public sealed class CreateSimulationJobHandlerTests
 
         public Task<SimulationJobResult?> GetByIdAsync(
             Guid id,
+            CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<SimulationJobResult?> ClaimNextPendingAsync(
             CancellationToken cancellationToken)
         {
             throw new NotSupportedException();
