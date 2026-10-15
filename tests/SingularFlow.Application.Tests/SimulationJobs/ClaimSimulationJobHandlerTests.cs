@@ -35,7 +35,10 @@ public sealed class ClaimSimulationJobHandlerTests
             Request: request,
             Status: SimulationJobStatus.Running,
             CreatedAtUtc: CreatedAtUtc,
-            ClaimedAtUtc: ClaimedAtUtc);
+            ClaimedAtUtc: ClaimedAtUtc,
+            SimulationId: null,
+            FinishedAtUtc: null,
+            FailureMessage: null);
 
         RecordingSimulationJobRepository repository = new(
             repositoryResult);
@@ -101,6 +104,18 @@ public sealed class ClaimSimulationJobHandlerTests
 
             return Task.FromResult(_result);
         }
+
+        public Task<SimulationJobResult?> TryCompleteAsync(
+            Guid jobId,
+            Guid simulationId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SimulationJobResult?> TryFailAsync(
+            Guid jobId,
+            string failureMessage,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
 
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,

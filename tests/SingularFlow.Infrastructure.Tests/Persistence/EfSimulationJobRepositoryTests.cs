@@ -167,6 +167,350 @@ public sealed class EfSimulationJobRepositoryTests
     }
 
     [Fact]
+    public async Task TryCompleteAsync_RunningJob_CompletesAndSimulationDeletionClearsReference()
+    {
+        string connectionString = GetTestConnectionString();
+        DbContextOptions<SingularFlowDbContext> options =
+            CreateOptions(connectionString);
+        Guid jobId = Guid.NewGuid();
+        Guid simulationId = Guid.NewGuid();
+        await EnsureDatabaseMigratedAsync(options);
+        await SeedSimulationAndJobsAsync(
+            options,
+            simulationId,
+            CreateJob(
+                jobId,
+                DateTimeOffset.UtcNow,
+                SimulationJobStatus.Running,
+                DateTimeOffset.UtcNow));
+
+        try
+        {
+            await using SingularFlowDbContext context = new(options);
+            await context.Database.CloseConnectionAsync();
+            Assert.Equal(
+                ConnectionState.Closed,
+                context.Database.GetDbConnection().State);
+
+            EfSimulationJobRepository repository = new(context);
+            DateTimeOffset timestampLowerBound =
+                DateTimeOffset.UtcNow.AddSeconds(-5);
+
+            SimulationJobResult? completed =
+                await repository.TryCompleteAsync(
+                    jobId,
+                    simulationId,
+                    CancellationToken.None);
+
+            Assert.Equal(
+                ConnectionState.Closed,
+                context.Database.GetDbConnection().State);
+            Assert.NotNull(completed);
+            Assert.Equal(jobId, completed.Id);
+            Assert.Equal(SimulationJobStatus.Completed, completed.Status);
+            Assert.Equal(simulationId, completed.SimulationId);
+            Assert.NotNull(completed.FinishedAtUtc);
+            Assert.Equal(TimeSpan.Zero, completed.FinishedAtUtc.Value.Offset);
+            Assert.InRange(
+                completed.FinishedAtUtc.Value,
+                timestampLowerBound,
+                DateTimeOffset.UtcNow.AddSeconds(5));
+            Assert.Null(completed.FailureMessage);
+            Assert.Null(
+                await repository.TryCompleteAsync(
+                    jobId,
+                    simulationId,
+                    CancellationToken.None));
+            Assert.Null(
+                await repository.TryFailAsync(
+                    jobId,
+                    "A completed job cannot fail",
+                    CancellationToken.None));
+            Assert.Empty(
+                context.ChangeTracker.Entries<SimulationJobEntity>());
+
+            SimulationJobResult? retrieved =
+                await repository.GetByIdAsync(
+                    jobId,
+                    CancellationToken.None);
+
+            Assert.NotNull(retrieved);
+            Assert.Equal(simulationId, retrieved.SimulationId);
+            Assert.Equal(completed.FinishedAtUtc, retrieved.FinishedAtUtc);
+
+            EfSimulationRepository simulationRepository = new(context);
+            Assert.True(
+                await simulationRepository.DeleteAsync(
+                    simulationId,
+                    CancellationToken.None));
+
+            SimulationJobResult? retained =
+                await repository.GetByIdAsync(
+                    jobId,
+                    CancellationToken.None);
+
+            Assert.NotNull(retained);
+            Assert.Equal(SimulationJobStatus.Completed, retained.Status);
+            Assert.Null(retained.SimulationId);
+            Assert.Equal(completed.FinishedAtUtc, retained.FinishedAtUtc);
+        }
+        finally
+        {
+            await DeleteExactJobsAsync(options, jobId);
+            await DeleteExactSimulationAsync(options, simulationId);
+        }
+    }
+
+    [Fact]
+    public async Task TryCompleteAsync_MissingSimulation_PropagatesForeignKeyViolation()
+    {
+        string connectionString = GetTestConnectionString();
+        DbContextOptions<SingularFlowDbContext> options =
+            CreateOptions(connectionString);
+        Guid jobId = Guid.NewGuid();
+        await EnsureDatabaseMigratedAsync(options);
+        await SeedJobsAsync(
+            options,
+            CreateJob(
+                jobId,
+                DateTimeOffset.UtcNow,
+                SimulationJobStatus.Running,
+                DateTimeOffset.UtcNow));
+
+        try
+        {
+            await using SingularFlowDbContext context = new(options);
+            EfSimulationJobRepository repository = new(context);
+
+            PostgresException exception =
+                await Assert.ThrowsAsync<PostgresException>(
+                    () => repository.TryCompleteAsync(
+                        jobId,
+                        Guid.NewGuid(),
+                        CancellationToken.None));
+
+            Assert.Equal(
+                PostgresErrorCodes.ForeignKeyViolation,
+                exception.SqlState);
+            Assert.Equal(
+                ConnectionState.Closed,
+                context.Database.GetDbConnection().State);
+
+            SimulationJobEntity persisted =
+                await context.SimulationJobs
+                    .AsNoTracking()
+                    .SingleAsync(job => job.Id == jobId);
+            Assert.Equal(SimulationJobStatus.Running, persisted.Status);
+            Assert.Null(persisted.SimulationId);
+            Assert.Null(persisted.FinishedAtUtc);
+        }
+        finally
+        {
+            await DeleteExactJobsAsync(options, jobId);
+        }
+    }
+
+    [Fact]
+    public async Task TryFailAsync_OnlyRunningJobTransitionsAndTransactionCanRollback()
+    {
+        string connectionString = GetTestConnectionString();
+        DbContextOptions<SingularFlowDbContext> options =
+            CreateOptions(connectionString);
+        Guid pendingId = Guid.NewGuid();
+        Guid runningId = Guid.NewGuid();
+        Guid completedId = Guid.NewGuid();
+        Guid failedId = Guid.NewGuid();
+        Guid[] seededIds = [pendingId, runningId, completedId, failedId];
+        DateTimeOffset timestamp = DateTimeOffset.UtcNow;
+        await EnsureDatabaseMigratedAsync(options);
+        await SeedJobsAsync(
+            options,
+            CreateJob(
+                pendingId,
+                timestamp,
+                SimulationJobStatus.Pending,
+                null),
+            CreateJob(
+                runningId,
+                timestamp,
+                SimulationJobStatus.Running,
+                timestamp),
+            CreateJob(
+                completedId,
+                timestamp,
+                SimulationJobStatus.Completed,
+                timestamp,
+                finishedAtUtc: timestamp.AddSeconds(1)),
+            CreateJob(
+                failedId,
+                timestamp,
+                SimulationJobStatus.Failed,
+                timestamp,
+                finishedAtUtc: timestamp.AddSeconds(1),
+                failureMessage: "Original failure"));
+
+        try
+        {
+            await using SingularFlowDbContext context = new(options);
+            await using var transaction =
+                await context.Database.BeginTransactionAsync();
+            Assert.Equal(
+                ConnectionState.Open,
+                context.Database.GetDbConnection().State);
+            EfSimulationJobRepository repository = new(context);
+
+            SimulationJobResult? failed =
+                await repository.TryFailAsync(
+                    runningId,
+                    "Bounded failure description",
+                    CancellationToken.None);
+
+            Assert.NotNull(failed);
+            Assert.Equal(SimulationJobStatus.Failed, failed.Status);
+            Assert.Null(failed.SimulationId);
+            Assert.NotNull(failed.FinishedAtUtc);
+            Assert.Equal(
+                "Bounded failure description",
+                failed.FailureMessage);
+            Assert.Equal(
+                ConnectionState.Open,
+                context.Database.GetDbConnection().State);
+
+            Assert.Null(
+                await repository.TryCompleteAsync(
+                    runningId,
+                    Guid.NewGuid(),
+                    CancellationToken.None));
+            Assert.Null(
+                await repository.TryFailAsync(
+                    runningId,
+                    "Conflicting failure",
+                    CancellationToken.None));
+            Assert.Null(
+                await repository.TryCompleteAsync(
+                    pendingId,
+                    Guid.NewGuid(),
+                    CancellationToken.None));
+            Assert.Null(
+                await repository.TryFailAsync(
+                    pendingId,
+                    "Pending cannot fail",
+                    CancellationToken.None));
+            Assert.Null(
+                await repository.TryFailAsync(
+                    completedId,
+                    "Completed cannot fail",
+                    CancellationToken.None));
+            Assert.Null(
+                await repository.TryCompleteAsync(
+                    failedId,
+                    Guid.NewGuid(),
+                    CancellationToken.None));
+
+            await transaction.RollbackAsync();
+
+            SimulationJobEntity persisted =
+                await context.SimulationJobs
+                    .AsNoTracking()
+                    .SingleAsync(job => job.Id == runningId);
+            Assert.Equal(SimulationJobStatus.Running, persisted.Status);
+            Assert.Null(persisted.FinishedAtUtc);
+            Assert.Null(persisted.FailureMessage);
+        }
+        finally
+        {
+            await DeleteExactJobsAsync(options, seededIds);
+        }
+    }
+
+    [Fact]
+    public async Task TryCompleteAndTryFailAsync_ConcurrentTerminalTransitions_HaveOneWinner()
+    {
+        string connectionString = GetTestConnectionString();
+        DbContextOptions<SingularFlowDbContext> options =
+            CreateOptions(connectionString);
+        Guid jobId = Guid.NewGuid();
+        Guid simulationId = Guid.NewGuid();
+        await EnsureDatabaseMigratedAsync(options);
+        await SeedSimulationAndJobsAsync(
+            options,
+            simulationId,
+            CreateJob(
+                jobId,
+                DateTimeOffset.UtcNow,
+                SimulationJobStatus.Running,
+                DateTimeOffset.UtcNow));
+
+        try
+        {
+            await using SingularFlowDbContext completionContext =
+                new(options);
+            await using SingularFlowDbContext failureContext =
+                new(options);
+            EfSimulationJobRepository completionRepository = new(
+                completionContext);
+            EfSimulationJobRepository failureRepository = new(
+                failureContext);
+            TaskCompletionSource startGate = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource completionReady = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource failureReady = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using CancellationTokenSource timeout =
+                new(TimeSpan.FromSeconds(10));
+
+            Task<SimulationJobResult?> completion = RunTransitionWhenReleasedAsync(
+                () => completionRepository.TryCompleteAsync(
+                    jobId,
+                    simulationId,
+                    timeout.Token),
+                completionReady,
+                startGate.Task);
+            Task<SimulationJobResult?> failure = RunTransitionWhenReleasedAsync(
+                () => failureRepository.TryFailAsync(
+                    jobId,
+                    "Concurrent failure",
+                    timeout.Token),
+                failureReady,
+                startGate.Task);
+
+            await Task.WhenAll(completionReady.Task, failureReady.Task);
+            startGate.SetResult();
+
+            SimulationJobResult?[] results =
+                await Task.WhenAll(completion, failure);
+            Assert.False(timeout.IsCancellationRequested);
+            SimulationJobResult winner = Assert.Single(
+                results.OfType<SimulationJobResult>());
+            Assert.True(
+                winner.Status is
+                    SimulationJobStatus.Completed or
+                    SimulationJobStatus.Failed);
+
+            await using SingularFlowDbContext verificationContext =
+                new(options);
+            SimulationJobEntity persisted =
+                await verificationContext.SimulationJobs
+                    .AsNoTracking()
+                    .SingleAsync(job => job.Id == jobId);
+            Assert.Equal(winner.Status, persisted.Status);
+            Assert.NotNull(persisted.FinishedAtUtc);
+            Assert.Equal(
+                winner.SimulationId,
+                persisted.SimulationId);
+            Assert.Equal(
+                winner.FailureMessage,
+                persisted.FailureMessage);
+        }
+        finally
+        {
+            await DeleteExactJobsAsync(options, jobId);
+            await DeleteExactSimulationAsync(options, simulationId);
+        }
+    }
+
+    [Fact]
     public async Task ClaimNextPendingAsync_NoPendingJobs_ReturnsNullAndRestoresConnectionState()
     {
         string connectionString = GetTestConnectionString();
@@ -319,12 +663,15 @@ public sealed class EfSimulationJobRepositoryTests
                 Guid.Parse("20000000-0000-0000-0000-000000000002"),
                 oldest.AddMinutes(-3),
                 SimulationJobStatus.Completed,
-                claimedAt),
+                claimedAt,
+                finishedAtUtc: claimedAt.AddSeconds(1)),
             CreateJob(
                 Guid.Parse("20000000-0000-0000-0000-000000000003"),
                 oldest.AddMinutes(-2),
                 SimulationJobStatus.Failed,
-                claimedAt),
+                claimedAt,
+                finishedAtUtc: claimedAt.AddSeconds(1),
+                failureMessage: "Seeded failure"),
             CreateJob(
                 Guid.Parse("20000000-0000-0000-0000-000000000004"),
                 oldest.AddMinutes(-1),
@@ -600,11 +947,25 @@ public sealed class EfSimulationJobRepositoryTests
             CancellationToken.None);
     }
 
+    private static async Task<SimulationJobResult?> RunTransitionWhenReleasedAsync(
+        Func<Task<SimulationJobResult?>> transition,
+        TaskCompletionSource ready,
+        Task startGate)
+    {
+        ready.SetResult();
+        await startGate;
+
+        return await transition();
+    }
+
     private static SimulationJobEntity CreateJob(
         Guid id,
         DateTimeOffset createdAtUtc,
         SimulationJobStatus status,
-        DateTimeOffset? claimedAtUtc)
+        DateTimeOffset? claimedAtUtc,
+        DateTimeOffset? finishedAtUtc = null,
+        Guid? simulationId = null,
+        string? failureMessage = null)
     {
         return new SimulationJobEntity
         {
@@ -617,7 +978,10 @@ public sealed class EfSimulationJobRepositoryTests
             SamplingMode = SamplingMode.Logarithmic,
             Status = status,
             CreatedAtUtc = createdAtUtc,
-            ClaimedAtUtc = claimedAtUtc
+            ClaimedAtUtc = claimedAtUtc,
+            FinishedAtUtc = finishedAtUtc,
+            SimulationId = simulationId,
+            FailureMessage = failureMessage
         };
     }
 
@@ -626,6 +990,34 @@ public sealed class EfSimulationJobRepositoryTests
         params SimulationJobEntity[] jobs)
     {
         await using SingularFlowDbContext context = new(options);
+        context.SimulationJobs.AddRange(jobs);
+        await context.SaveChangesAsync();
+    }
+
+    private static async Task EnsureDatabaseMigratedAsync(
+        DbContextOptions<SingularFlowDbContext> options)
+    {
+        await using SingularFlowDbContext context = new(options);
+        await context.Database.MigrateAsync();
+    }
+
+    private static async Task SeedSimulationAndJobsAsync(
+        DbContextOptions<SingularFlowDbContext> options,
+        Guid simulationId,
+        params SimulationJobEntity[] jobs)
+    {
+        await using SingularFlowDbContext context = new(options);
+        context.Simulations.Add(
+            new SimulationEntity
+            {
+                Id = simulationId,
+                SingularTime = 2.5,
+                ConcentrationExponent = 0.004,
+                StartTime = 0.25,
+                EndTime = 1.75,
+                SampleCount = 17,
+                SamplingMode = SamplingMode.Logarithmic
+            });
         context.SimulationJobs.AddRange(jobs);
         await context.SaveChangesAsync();
     }
@@ -655,6 +1047,20 @@ public sealed class EfSimulationJobRepositoryTests
         Assert.False(
             await context.SimulationJobs.AnyAsync(
                 job => ids.Contains(job.Id)));
+    }
+
+    private static async Task DeleteExactSimulationAsync(
+        DbContextOptions<SingularFlowDbContext> options,
+        Guid id)
+    {
+        await using SingularFlowDbContext context = new(options);
+        await context.Simulations
+            .Where(simulation => simulation.Id == id)
+            .ExecuteDeleteAsync();
+
+        Assert.False(
+            await context.Simulations.AnyAsync(
+                simulation => simulation.Id == id));
     }
 
     private static string GetTestConnectionString()

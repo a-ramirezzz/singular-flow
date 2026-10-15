@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
+using SingularFlow.Application.SimulationJobs;
 using SingularFlow.Infrastructure.Persistence.Entities;
 
 namespace SingularFlow.Infrastructure.Persistence.Configurations;
@@ -43,6 +44,33 @@ internal sealed class SimulationJobEntityConfiguration :
                     "ck_simulation_jobs_status",
                     "\"status\" IN ('Pending', 'Running', " +
                     "'Completed', 'Failed', 'Cancelled')");
+
+                tableBuilder.HasCheckConstraint(
+                    "ck_simulation_jobs_lifecycle",
+                    "(\"status\" = 'Pending' AND " +
+                    "\"claimed_at_utc\" IS NULL AND " +
+                    "\"finished_at_utc\" IS NULL AND " +
+                    "\"simulation_id\" IS NULL AND " +
+                    "\"failure_message\" IS NULL) OR " +
+                    "(\"status\" = 'Running' AND " +
+                    "\"claimed_at_utc\" IS NOT NULL AND " +
+                    "\"finished_at_utc\" IS NULL AND " +
+                    "\"simulation_id\" IS NULL AND " +
+                    "\"failure_message\" IS NULL) OR " +
+                    "(\"status\" = 'Completed' AND " +
+                    "\"claimed_at_utc\" IS NOT NULL AND " +
+                    "\"finished_at_utc\" IS NOT NULL AND " +
+                    "\"failure_message\" IS NULL) OR " +
+                    "(\"status\" = 'Failed' AND " +
+                    "\"claimed_at_utc\" IS NOT NULL AND " +
+                    "\"finished_at_utc\" IS NOT NULL AND " +
+                    "\"simulation_id\" IS NULL AND " +
+                    "\"failure_message\" IS NOT NULL AND " +
+                    "\"failure_message\" ~ '[^[:space:]]') OR " +
+                    "(\"status\" = 'Cancelled' AND " +
+                    "\"finished_at_utc\" IS NULL AND " +
+                    "\"simulation_id\" IS NULL AND " +
+                    "\"failure_message\" IS NULL)");
             });
 
         builder
@@ -110,6 +138,23 @@ internal sealed class SimulationJobEntityConfiguration :
             .HasColumnType("timestamp with time zone");
 
         builder
+            .Property(job => job.SimulationId)
+            .HasColumnName("simulation_id")
+            .HasColumnType("uuid");
+
+        builder
+            .Property(job => job.FinishedAtUtc)
+            .HasColumnName("finished_at_utc")
+            .HasColumnType("timestamp with time zone");
+
+        builder
+            .Property(job => job.FailureMessage)
+            .HasColumnName("failure_message")
+            .HasMaxLength(
+                SimulationJobResult.MaximumFailureMessageLength)
+            .HasColumnType("character varying(1000)");
+
+        builder
             .HasIndex(job => new
             {
                 job.Status,
@@ -118,5 +163,19 @@ internal sealed class SimulationJobEntityConfiguration :
             })
             .HasDatabaseName(
                 "ix_simulation_jobs_status_created_at_utc_id");
+
+        builder
+            .HasIndex(job => job.SimulationId)
+            .HasDatabaseName(
+                "ix_simulation_jobs_simulation_id");
+
+        builder
+            .HasOne<SimulationEntity>()
+            .WithMany()
+            .HasForeignKey(job => job.SimulationId)
+            .HasConstraintName(
+                "fk_simulation_jobs_simulations_simulation_id")
+            .OnDelete(DeleteBehavior.SetNull)
+            .IsRequired(false);
     }
 }

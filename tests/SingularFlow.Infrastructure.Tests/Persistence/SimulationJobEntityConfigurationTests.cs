@@ -86,7 +86,11 @@ public sealed class SimulationJobEntityConfigurationTests
         Assert.Null(claimedAt.GetDefaultValueSql());
         Assert.Equal(ValueGenerated.Never, claimedAt.ValueGenerated);
 
-        IIndex index = Assert.Single(entityType.GetIndexes());
+        IIndex index = Assert.Single(
+            entityType.GetIndexes(),
+            candidate =>
+                candidate.GetDatabaseName() ==
+                "ix_simulation_jobs_status_created_at_utc_id");
         Assert.Equal(
             new[]
             {
@@ -95,7 +99,7 @@ public sealed class SimulationJobEntityConfigurationTests
                 nameof(SimulationJobEntity.Id)
             },
             index.Properties.Select(property => property.Name));
-        Assert.Empty(entityType.GetForeignKeys());
+        Assert.Single(entityType.GetForeignKeys());
         Assert.Empty(entityType.GetNavigations());
     }
 
@@ -110,7 +114,7 @@ public sealed class SimulationJobEntityConfigurationTests
         IReadOnlyList<ICheckConstraint> constraints =
             entityType.GetCheckConstraints().ToArray();
 
-        Assert.Equal(6, constraints.Count);
+        Assert.Equal(7, constraints.Count);
         AssertConstraint(constraints, "ck_simulation_jobs_sample_count",
             "\"sample_count\" >= 2 AND \"sample_count\" <= 100000");
         AssertConstraint(constraints,
@@ -125,15 +129,38 @@ public sealed class SimulationJobEntityConfigurationTests
 
         AssertConstraint(constraints, "ck_simulation_jobs_status",
             "\"status\" IN ('Pending', 'Running', 'Completed', 'Failed', 'Cancelled')");
+
+        AssertConstraint(
+            constraints,
+            "ck_simulation_jobs_lifecycle",
+            "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL " +
+            "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
+            "AND \"failure_message\" IS NULL) OR " +
+            "(\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL " +
+            "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
+            "AND \"failure_message\" IS NULL) OR " +
+            "(\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL " +
+            "AND \"finished_at_utc\" IS NOT NULL " +
+            "AND \"failure_message\" IS NULL) OR " +
+            "(\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL " +
+            "AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL " +
+            "AND \"failure_message\" IS NOT NULL " +
+            "AND \"failure_message\" ~ '[^[:space:]]') OR " +
+            "(\"status\" = 'Cancelled' AND \"finished_at_utc\" IS NULL " +
+            "AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)");
     }
 
     [Fact]
-    public void Model_ConfiguresPendingSelectionIndexWithoutRelationship()
+    public void Model_ConfiguresPendingSelectionIndexAndSimulationForeignKey()
     {
         using SingularFlowDbContext context = CreateContext();
 
         IEntityType entityType = GetEntityType(context.Model);
-        IIndex index = Assert.Single(entityType.GetIndexes());
+        IIndex index = Assert.Single(
+            entityType.GetIndexes(),
+            candidate =>
+                candidate.GetDatabaseName() ==
+                "ix_simulation_jobs_status_created_at_utc_id");
 
         Assert.Equal(
             new[]
@@ -147,7 +174,9 @@ public sealed class SimulationJobEntityConfigurationTests
             "ix_simulation_jobs_status_created_at_utc_id",
             index.GetDatabaseName());
         Assert.False(index.IsUnique);
-        Assert.Empty(entityType.GetForeignKeys());
+        IForeignKey foreignKey = Assert.Single(
+            entityType.GetForeignKeys());
+        Assert.Equal(DeleteBehavior.SetNull, foreignKey.DeleteBehavior);
         Assert.Empty(entityType.GetNavigations());
     }
 
