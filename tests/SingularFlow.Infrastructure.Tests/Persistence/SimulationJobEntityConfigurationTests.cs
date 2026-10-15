@@ -69,6 +69,37 @@ public sealed class SimulationJobEntityConfigurationTests
     }
 
     [Fact]
+    public void Model_MapsClaimedAtUtcAsNullableTimestampWithoutDefault()
+    {
+        using SingularFlowDbContext context = CreateContext();
+
+        IEntityType entityType = GetEntityType(context.Model);
+        IProperty claimedAt = Assert.IsAssignableFrom<IProperty>(
+            entityType.FindProperty("ClaimedAtUtc"));
+        StoreObjectIdentifier table = StoreObjectIdentifier.Table(
+            entityType.GetTableName()!, entityType.GetSchema());
+
+        Assert.Equal(typeof(DateTimeOffset?), claimedAt.ClrType);
+        Assert.Equal("claimed_at_utc", claimedAt.GetColumnName(table));
+        Assert.Equal("timestamp with time zone", claimedAt.GetColumnType());
+        Assert.True(claimedAt.IsNullable);
+        Assert.Null(claimedAt.GetDefaultValueSql());
+        Assert.Equal(ValueGenerated.Never, claimedAt.ValueGenerated);
+
+        IIndex index = Assert.Single(entityType.GetIndexes());
+        Assert.Equal(
+            new[]
+            {
+                nameof(SimulationJobEntity.Status),
+                nameof(SimulationJobEntity.CreatedAtUtc),
+                nameof(SimulationJobEntity.Id)
+            },
+            index.Properties.Select(property => property.Name));
+        Assert.Empty(entityType.GetForeignKeys());
+        Assert.Empty(entityType.GetNavigations());
+    }
+
+    [Fact]
     public void Model_ConfiguresJobCheckConstraints()
     {
         using SingularFlowDbContext context = CreateContext();
