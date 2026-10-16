@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.ExceptionServices;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -40,7 +41,62 @@ public sealed class EfSimulationJobRepository :
             job.sampling_mode,
             job.status,
             job.created_at_utc,
-            job.claimed_at_utc;
+            job.claimed_at_utc,
+            job.simulation_id,
+            job.finished_at_utc,
+            job.failure_message;
+        """;
+
+    private const string CompleteRunningJobSql =
+        """
+        UPDATE simulation_jobs
+        SET
+            status = @completed_status,
+            simulation_id = @simulation_id,
+            finished_at_utc = CURRENT_TIMESTAMP,
+            failure_message = NULL
+        WHERE id = @id
+          AND status = @running_status
+        RETURNING
+            id,
+            singular_time,
+            concentration_exponent,
+            start_time,
+            end_time,
+            sample_count,
+            sampling_mode,
+            status,
+            created_at_utc,
+            claimed_at_utc,
+            simulation_id,
+            finished_at_utc,
+            failure_message;
+        """;
+
+    private const string FailRunningJobSql =
+        """
+        UPDATE simulation_jobs
+        SET
+            status = @failed_status,
+            simulation_id = NULL,
+            finished_at_utc = CURRENT_TIMESTAMP,
+            failure_message = @failure_message
+        WHERE id = @id
+          AND status = @running_status
+        RETURNING
+            id,
+            singular_time,
+            concentration_exponent,
+            start_time,
+            end_time,
+            sample_count,
+            sampling_mode,
+            status,
+            created_at_utc,
+            claimed_at_utc,
+            simulation_id,
+            finished_at_utc,
+            failure_message;
         """;
 
     private readonly SingularFlowDbContext _context;
@@ -92,6 +148,46 @@ public sealed class EfSimulationJobRepository :
         return job is null
             ? null
             : Map(job);
+    }
+
+    public Task<SimulationJobResult?> TryCompleteAsync(
+        Guid jobId,
+        Guid simulationId,
+        CancellationToken cancellationToken)
+    {
+        return ExecuteTransitionAsync(
+            CompleteRunningJobSql,
+            jobId,
+            nameof(SimulationJobStatus.Completed),
+            simulationId,
+            failureMessage: null,
+            cancellationToken);
+    }
+
+    public Task<SimulationJobResult?> TryFailAsync(
+        Guid jobId,
+        string failureMessage,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(failureMessage);
+
+        if (failureMessage.Length >
+            SimulationJobResult.MaximumFailureMessageLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(failureMessage),
+                $"Failure message must not exceed " +
+                $"{SimulationJobResult.MaximumFailureMessageLength} " +
+                "characters.");
+        }
+
+        return ExecuteTransitionAsync(
+            FailRunningJobSql,
+            jobId,
+            nameof(SimulationJobStatus.Failed),
+            simulationId: null,
+            failureMessage: failureMessage,
+            cancellationToken: cancellationToken);
     }
 
     public async Task<SimulationJobResult?> ClaimNextPendingAsync(
@@ -190,7 +286,10 @@ public sealed class EfSimulationJobRepository :
             Request: request,
             Status: job.Status,
             CreatedAtUtc: job.CreatedAtUtc,
-            ClaimedAtUtc: job.ClaimedAtUtc);
+            ClaimedAtUtc: job.ClaimedAtUtc,
+            SimulationId: job.SimulationId,
+            FinishedAtUtc: job.FinishedAtUtc,
+            FailureMessage: job.FailureMessage);
     }
 
     private static SimulationJobResult Map(
@@ -203,8 +302,11 @@ public sealed class EfSimulationJobRepository :
             ParseEnum<SimulationJobStatus>(
                 reader.GetString(7),
                 "status");
+        DateTimeOffset? claimedAtUtc = reader.IsDBNull(9)
+            ? null
+            : reader.GetFieldValue<DateTimeOffset>(9);
 
-        if (reader.IsDBNull(9))
+        if (claimedAtUtc is null)
         {
             throw new DataException(
                 "Claimed simulation job has a null claimed_at_utc value.");
@@ -224,8 +326,177 @@ public sealed class EfSimulationJobRepository :
             Status: status,
             CreatedAtUtc:
                 reader.GetFieldValue<DateTimeOffset>(8),
-            ClaimedAtUtc:
-                reader.GetFieldValue<DateTimeOffset>(9));
+            ClaimedAtUtc: claimedAtUtc,
+            SimulationId: reader.IsDBNull(10)
+                ? null
+                : reader.GetGuid(10),
+            FinishedAtUtc: reader.IsDBNull(11)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(11),
+            FailureMessage: reader.IsDBNull(12)
+                ? null
+                : reader.GetString(12));
+    }
+
+    private async Task<SimulationJobResult?> ExecuteTransitionAsync(
+        string commandText,
+        Guid jobId,
+        string terminalStatus,
+        Guid? simulationId,
+        string? failureMessage,
+        CancellationToken cancellationToken)
+    {
+        DbConnection connection =
+            _context.Database.GetDbConnection();
+        IDbContextTransaction? currentTransaction =
+            _context.Database.CurrentTransaction;
+        bool openedConnection =
+            connection.State != ConnectionState.Open;
+        DbCommand? command = null;
+        DbDataReader? reader = null;
+        SimulationJobResult? result = null;
+        ExceptionDispatchInfo? primaryException = null;
+
+        try
+        {
+            if (openedConnection)
+            {
+                await connection.OpenAsync(cancellationToken);
+            }
+
+            command = connection.CreateCommand();
+
+            command.CommandText = commandText;
+
+            if (currentTransaction is not null)
+            {
+                command.Transaction =
+                    currentTransaction.GetDbTransaction();
+            }
+
+            AddParameter(command, "id", DbType.Guid, jobId);
+            AddStringParameter(
+                command,
+                "running_status",
+                nameof(SimulationJobStatus.Running));
+
+            if (terminalStatus ==
+                nameof(SimulationJobStatus.Completed))
+            {
+                Guid completedSimulationId =
+                    simulationId ??
+                    throw new InvalidOperationException(
+                        "A completed job requires a simulation ID.");
+                AddStringParameter(
+                    command,
+                    "completed_status",
+                    terminalStatus);
+                AddParameter(
+                    command,
+                    "simulation_id",
+                    DbType.Guid,
+                    completedSimulationId);
+            }
+            else
+            {
+                string failedMessage =
+                    failureMessage ??
+                    throw new InvalidOperationException(
+                        "A failed job requires a failure message.");
+                AddStringParameter(
+                    command,
+                    "failed_status",
+                    terminalStatus);
+                DbParameter failureParameter =
+                    AddParameter(
+                        command,
+                        "failure_message",
+                        DbType.String,
+                        failedMessage);
+                failureParameter.Size =
+                    SimulationJobResult.MaximumFailureMessageLength;
+            }
+
+            reader = await command.ExecuteReaderAsync(
+                    cancellationToken);
+
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                result = Map(reader);
+
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    throw new DataException(
+                        "Terminal transition returned more than one simulation job.");
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            primaryException = ExceptionDispatchInfo.Capture(exception);
+        }
+        finally
+        {
+            if (reader is not null)
+            {
+                try
+                {
+                    await reader.DisposeAsync();
+                }
+                catch (Exception exception)
+                {
+                    primaryException ??=
+                        ExceptionDispatchInfo.Capture(exception);
+                }
+            }
+
+            if (command is not null)
+            {
+                try
+                {
+                    await command.DisposeAsync();
+                }
+                catch (Exception exception)
+                {
+                    primaryException ??=
+                        ExceptionDispatchInfo.Capture(exception);
+                }
+            }
+
+            try
+            {
+                if (openedConnection &&
+                    currentTransaction is null &&
+                    connection.State != ConnectionState.Closed)
+                {
+                    await connection.CloseAsync();
+                }
+            }
+            catch (Exception exception)
+            {
+                primaryException ??=
+                    ExceptionDispatchInfo.Capture(exception);
+            }
+        }
+
+        primaryException?.Throw();
+        return result;
+    }
+
+    private static DbParameter AddParameter(
+        DbCommand command,
+        string name,
+        DbType type,
+        object value)
+    {
+        DbParameter parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.DbType = type;
+        parameter.Value = value;
+
+        command.Parameters.Add(parameter);
+
+        return parameter;
     }
 
     private static void AddStringParameter(

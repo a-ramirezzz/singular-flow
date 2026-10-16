@@ -25,4 +25,10 @@ public sealed class SimulationJobEntity
     public DateTimeOffset CreatedAtUtc { get; set; }
 
     public DateTimeOffset? ClaimedAtUtc { get; set; }
+
+    public Guid? SimulationId { get; set; }
+
+    public DateTimeOffset? FinishedAtUtc { get; set; }
+
+    public string? FailureMessage { get; set; }
 }

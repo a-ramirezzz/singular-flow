@@ -7,4 +7,10 @@ public sealed record SimulationJobResult(
     RunSimulationRequest Request,
     SimulationJobStatus Status,
     DateTimeOffset CreatedAtUtc,
-    DateTimeOffset? ClaimedAtUtc);
+    DateTimeOffset? ClaimedAtUtc,
+    Guid? SimulationId,
+    DateTimeOffset? FinishedAtUtc,
+    string? FailureMessage)
+{
+    public const int MaximumFailureMessageLength = 1000;
+}

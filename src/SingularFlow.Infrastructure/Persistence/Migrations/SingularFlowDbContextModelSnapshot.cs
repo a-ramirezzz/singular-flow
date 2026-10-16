@@ -106,6 +106,15 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("double precision")
                         .HasColumnName("end_time");
 
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("failure_message");
+
+                    b.Property<DateTimeOffset?>("FinishedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finished_at_utc");
+
                     b.Property<int>("SampleCount")
                         .HasColumnType("integer")
                         .HasColumnName("sample_count");
@@ -115,6 +124,10 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("sampling_mode");
+
+                    b.Property<Guid?>("SimulationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("simulation_id");
 
                     b.Property<double>("SingularTime")
                         .HasColumnType("double precision")
@@ -133,6 +146,9 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_simulation_jobs");
 
+                    b.HasIndex("SimulationId")
+                        .HasDatabaseName("ix_simulation_jobs_simulation_id");
+
                     b.HasIndex("Status", "CreatedAtUtc", "Id")
                         .HasDatabaseName("ix_simulation_jobs_status_created_at_utc_id");
 
@@ -141,6 +157,8 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                             t.HasCheckConstraint("ck_simulation_jobs_concentration_exponent", "\"concentration_exponent\" > 0 AND \"concentration_exponent\" < 0.01");
 
                             t.HasCheckConstraint("ck_simulation_jobs_end_time", "\"end_time\" > \"start_time\"");
+
+                            t.HasCheckConstraint("ck_simulation_jobs_lifecycle", "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL AND \"finished_at_utc\" IS NOT NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NOT NULL AND \"failure_message\" ~ '[^[:space:]]') OR (\"status\" = 'Cancelled' AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)");
 
                             t.HasCheckConstraint("ck_simulation_jobs_sample_count", "\"sample_count\" >= 2 AND \"sample_count\" <= 100000");
 
@@ -212,6 +230,15 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_simulation_states_sequence", "\"sequence\" >= 0");
                         });
+                });
+
+            modelBuilder.Entity("SingularFlow.Infrastructure.Persistence.Entities.SimulationJobEntity", b =>
+                {
+                    b.HasOne("SingularFlow.Infrastructure.Persistence.Entities.SimulationEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SimulationId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_simulation_jobs_simulations_simulation_id");
                 });
 
             modelBuilder.Entity("SingularFlow.Infrastructure.Persistence.Entities.SimulationStateEntity", b =>

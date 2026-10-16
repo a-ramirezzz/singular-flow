@@ -14,4 +14,14 @@ public interface ISimulationJobRepository
 
     Task<SimulationJobResult?> ClaimNextPendingAsync(
         CancellationToken cancellationToken);
+
+    Task<SimulationJobResult?> TryCompleteAsync(
+        Guid jobId,
+        Guid simulationId,
+        CancellationToken cancellationToken);
+
+    Task<SimulationJobResult?> TryFailAsync(
+        Guid jobId,
+        string failureMessage,
+        CancellationToken cancellationToken);
 }
