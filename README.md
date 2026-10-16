@@ -642,7 +642,7 @@ The test project depends directly on `SingularFlow.Domain`.
 
 Contains automated tests for application use-case behavior.
 
-The eighteen application tests verify:
+The twenty-six application tests verify:
 
 * Rejection of a null simulation request.
 * Execution with uniform sampling.
@@ -660,6 +660,8 @@ The eighteen application tests verify:
 * Deletion delegation, propagation of the repository's Boolean result, and forwarding of the simulation ID and cancellation token.
 * Simulation-job creation delegation exactly once, request identity and cancellation-token forwarding, and propagation of the exact repository result.
 * Simulation-job claim delegation exactly once, exact cancellation-token forwarding, claimed-result identity, and propagation of an empty-queue `null` result.
+* Simulation-job completion and failure delegation exactly once, exact job ID and cancellation-token forwarding, exact failure-description forwarding, and propagation of successful results or `null`.
+* Rejection of null, empty, whitespace-only, and over-1,000-character failure descriptions before repository invocation.
 * Stable simulation-job lifecycle enum names and numeric values.
 
 The test project depends directly on `SingularFlow.Application`.

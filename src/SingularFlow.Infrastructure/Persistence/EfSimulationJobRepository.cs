@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.ExceptionServices;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -351,7 +352,10 @@ public sealed class EfSimulationJobRepository :
             _context.Database.CurrentTransaction;
         bool openedConnection =
             connection.State != ConnectionState.Open;
-        Exception? operationException = null;
+        DbCommand? command = null;
+        DbDataReader? reader = null;
+        SimulationJobResult? result = null;
+        ExceptionDispatchInfo? primaryException = null;
 
         try
         {
@@ -360,8 +364,7 @@ public sealed class EfSimulationJobRepository :
                 await connection.OpenAsync(cancellationToken);
             }
 
-            await using DbCommand command =
-                connection.CreateCommand();
+            command = connection.CreateCommand();
 
             command.CommandText = commandText;
 
@@ -414,45 +417,70 @@ public sealed class EfSimulationJobRepository :
                     SimulationJobResult.MaximumFailureMessageLength;
             }
 
-            await using DbDataReader reader =
-                await command.ExecuteReaderAsync(
+            reader = await command.ExecuteReaderAsync(
                     cancellationToken);
-
-            if (!await reader.ReadAsync(cancellationToken))
-            {
-                return null;
-            }
-
-            SimulationJobResult result = Map(reader);
 
             if (await reader.ReadAsync(cancellationToken))
             {
-                throw new DataException(
-                    "Terminal transition returned more than one simulation job.");
-            }
+                result = Map(reader);
 
-            return result;
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    throw new DataException(
+                        "Terminal transition returned more than one simulation job.");
+                }
+            }
         }
         catch (Exception exception)
         {
-            operationException = exception;
-            throw;
+            primaryException = ExceptionDispatchInfo.Capture(exception);
         }
         finally
         {
-            if (openedConnection &&
-                currentTransaction is null &&
-                connection.State != ConnectionState.Closed)
+            if (reader is not null)
             {
                 try
                 {
-                    await connection.CloseAsync();
+                    await reader.DisposeAsync();
                 }
-                catch when (operationException is not null)
+                catch (Exception exception)
                 {
+                    primaryException ??=
+                        ExceptionDispatchInfo.Capture(exception);
                 }
             }
+
+            if (command is not null)
+            {
+                try
+                {
+                    await command.DisposeAsync();
+                }
+                catch (Exception exception)
+                {
+                    primaryException ??=
+                        ExceptionDispatchInfo.Capture(exception);
+                }
+            }
+
+            try
+            {
+                if (openedConnection &&
+                    currentTransaction is null &&
+                    connection.State != ConnectionState.Closed)
+                {
+                    await connection.CloseAsync();
+                }
+            }
+            catch (Exception exception)
+            {
+                primaryException ??=
+                    ExceptionDispatchInfo.Capture(exception);
+            }
         }
+
+        primaryException?.Throw();
+        return result;
     }
 
     private static DbParameter AddParameter(
