@@ -60,6 +60,7 @@ public sealed class SimulationDatabaseEndpointTests
 
         double singularTime =
             1.0 + Random.Shared.NextDouble();
+        Guid? simulationId = null;
 
         try
         {
@@ -101,13 +102,14 @@ public sealed class SimulationDatabaseEndpointTests
                 await JsonDocument.ParseAsync(
                     postContent);
 
-            Guid simulationId =
+            simulationId =
                 postDocument.RootElement
                     .GetProperty("id")
                     .GetGuid();
+            Guid createdSimulationId = simulationId.Value;
 
             Assert.Equal(
-                $"/api/simulations/{simulationId}",
+                $"/api/simulations/{createdSimulationId}",
                 location.AbsolutePath);
 
             using HttpResponseMessage getResponse =
@@ -129,7 +131,7 @@ public sealed class SimulationDatabaseEndpointTests
                 getDocument.RootElement;
 
             Assert.Equal(
-                simulationId,
+                createdSimulationId,
                 retrieved.GetProperty("id").GetGuid());
 
             Assert.Equal(
@@ -206,7 +208,7 @@ public sealed class SimulationDatabaseEndpointTests
                     .Single(item =>
                         item.GetProperty("id")
                             .GetGuid() ==
-                        simulationId);
+                        createdSimulationId);
 
             Assert.Equal(
                 singularTime,
@@ -234,7 +236,7 @@ public sealed class SimulationDatabaseEndpointTests
                     .SingleAsync(
                         simulation =>
                             simulation.Id ==
-                            simulationId);
+                            createdSimulationId);
 
             Assert.Equal(4, saved.SampleCount);
             Assert.NotEqual(default, saved.CreatedAtUtc);
@@ -279,23 +281,23 @@ public sealed class SimulationDatabaseEndpointTests
                 await context.Simulations
                     .AnyAsync(
                         simulation =>
-                            simulation.Id == simulationId));
+                            simulation.Id == createdSimulationId));
 
             Assert.False(
                 await context.SimulationStates
                     .AnyAsync(
                         state =>
-                            state.SimulationId == simulationId));
+                            state.SimulationId == createdSimulationId));
         }
 
         finally
         {
-            await context.Simulations
-                .Where(
-                    simulation =>
-                        simulation.SingularTime ==
-                        singularTime)
-                .ExecuteDeleteAsync();
+            if (simulationId is Guid id)
+            {
+                await context.Simulations
+                    .Where(simulation => simulation.Id == id)
+                    .ExecuteDeleteAsync();
+            }
         }
     }
 }

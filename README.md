@@ -22,7 +22,7 @@ The complete local application stack can run through Docker Compose as separate 
 
 `SingularFlow.Infrastructure` defines the EF Core schema, mappings, migrations, and repository implementations. The containerized API uses the same Npgsql and EF Core persistence path as direct local execution: it creates, lists, retrieves, and deletes simulations while persisting their ordered states in the separate PostgreSQL service. This local Compose stack is a development environment, not a complete production deployment platform.
 
-The project also includes a persistent simulation-job foundation: Application lifecycle and result contracts, creation, claiming, completion, and failure handlers, a repository abstraction, an EF Core job entity and configuration, and the PostgreSQL `simulation_jobs` table and migrations. Jobs can be atomically claimed from `Pending` to `Running`, then transitioned from `Running` to `Completed` with a persisted simulation reference or to `Failed` with a bounded failure description. Completed jobs retain their record when the linked simulation is deleted, with the reference set to `NULL`. These job services are not registered with or used by the running API: no public job endpoint, polling loop, queue, or background processor exists, and the existing simulation API remains synchronous. A process crash after claiming can leave a job `Running`; lease-based recovery is not implemented.
+The project also includes a tested one-job processing foundation on top of its persistent simulation-job lifecycle. `ProcessNextSimulationJobHandler` claims at most one job, validates its `Running` snapshot, runs the stored request through the existing simulation use case, and delegates atomic simulation persistence and job completion through a provider-independent Application port. The Infrastructure implementation saves the simulation and ordered states and conditionally transitions the job to `Completed` in one transaction boundary. Calculation and thrown finalization failures attempt a conditional `Failed` transition with a fixed safe description, then rethrow the original exception; cancellation is not converted into failure. This orchestration is not registered with or invoked by the running API: no public job endpoint, `202 Accepted` flow, polling loop, queue, or hosted worker exists, and the existing simulation API remains synchronous. Calculation is synchronous and cannot be interrupted mid-calculation; a process stop or cancellation after claim can leave a job `Running`, because leases and abandoned-job recovery are not implemented.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -49,7 +49,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Verify domain, application, API, and Infrastructure behavior with 130 automated tests: 42 Domain, 26 Application, 23 API, and 39 Infrastructure tests, with 0 failed and 0 skipped in the latest validation.
+* Verify domain, application, API, and Infrastructure behavior with 166 automated tests: 42 Domain, 51 Application, 23 API, and 50 Infrastructure tests, with 0 failed and 0 skipped in the latest validation.
 * Validate every pull request and push to `main` with GitHub Actions, including a build of the API Docker image.
 * Host an ASP.NET Core Web API.
 * Expose `GET /health/live` for process liveness, `GET /health/ready` for PostgreSQL connectivity readiness, and `GET /health` as a backward-compatible readiness alias.
@@ -79,6 +79,9 @@ The project is being developed incrementally with Domain and Application unit te
 * Define a persistent simulation-job foundation with durable creation, retrieval, and atomic oldest-first claiming, without exposing asynchronous HTTP submission or running a worker.
 * Atomically transition one `Pending` job to `Running` through PostgreSQL `FOR UPDATE SKIP LOCKED`, with a database-generated claim timestamp and deterministic creation-time/UUID ordering.
 * Atomically transition a `Running` job to `Completed` with a nullable persisted-simulation reference, or to `Failed` with a nonblank failure description bounded to 1,000 characters.
+* Process at most one claimed simulation job per Application invocation, with explicit no-work and completed results.
+* Calculate the stored request through the existing simulation handler and atomically persist its simulation and ordered states with the `Running`-to-`Completed` transition.
+* Attempt a safe `Failed` transition after calculation or thrown finalization errors while preserving and rethrowing the original exception; cancellation is not converted into failure.
 * Preserve completed-job records when their referenced simulation is deleted, clearing only the optional simulation reference.
 
 ## Mathematical model
@@ -376,7 +379,10 @@ singular-flow/
 │   │   │   ├── CompleteSimulationJobHandler.cs
 │   │   │   ├── CreateSimulationJobHandler.cs
 │   │   │   ├── FailSimulationJobHandler.cs
+│   │   │   ├── ISimulationJobCompletionRepository.cs
 │   │   │   ├── ISimulationJobRepository.cs
+│   │   │   ├── ProcessNextSimulationJobHandler.cs
+│   │   │   ├── ProcessNextSimulationJobResult.cs
 │   │   │   ├── SimulationJobResult.cs
 │   │   │   └── SimulationJobStatus.cs
 │   │   ├── Simulations/
@@ -418,6 +424,7 @@ singular-flow/
 │       │   │   └── SingularFlowDbContextFactory.cs
 │       │   ├── Entities/
 │       │   │   └── SimulationJobEntity.cs
+│       │   ├── EfSimulationJobCompletionRepository.cs
 │       │   ├── EfSimulationJobRepository.cs
 │       │   ├── EfSimulationRepository.cs
 │       │   ├── Migrations/
@@ -449,6 +456,7 @@ singular-flow/
 │   │   ├── SimulationJobs/
 │   │   │   ├── ClaimSimulationJobHandlerTests.cs
 │   │   │   ├── CreateSimulationJobHandlerTests.cs
+│   │   │   ├── ProcessNextSimulationJobHandlerTests.cs
 │   │   │   └── TransitionSimulationJobHandlerTests.cs
 │   │   ├── Simulations/
 │   │   │   ├── DeleteSimulationHandlerTests.cs
@@ -469,6 +477,7 @@ singular-flow/
 │       ├── Persistence/
 │       │   ├── DesignTime/
 │       │   │   └── SingularFlowDbContextFactoryTests.cs
+│       │   ├── EfSimulationJobCompletionRepositoryTests.cs
 │       │   ├── EfSimulationJobRepositoryTests.cs
 │       │   ├── EfSimulationRepositoryTests.cs
 │       │   ├── SimulationJobEntityConfigurationTests.cs
@@ -554,6 +563,7 @@ Responsibilities include:
 * Validating pagination boundaries and delegating valid collection queries through `ListSimulationsHandler` and the repository abstraction.
 * Owning the deletion use case through `DeleteSimulationHandler`, which delegates the simulation ID and cancellation token to the repository abstraction and returns its Boolean result.
 * Returning `PagedSimulationResult` metadata and collection-specific `SimulationSummaryResult` items without state collections.
+* Processing at most one claimed simulation job through `ProcessNextSimulationJobHandler`.
 * Returning structured simulation results.
 * Preventing presentation concerns from entering the domain layer.
 
@@ -561,7 +571,11 @@ The `SimulationJobs` area defines the durable-request boundary for later backgro
 
 `SimulationJobStatus` defines `Pending`, `Running`, `Completed`, `Failed`, and `Cancelled`. Creation produces `Pending`; atomic claiming changes one eligible job to `Running`; and the repository can conditionally transition only `Running` jobs to `Completed` or `Failed`. `SimulationJobResult` contains the job ID, original `RunSimulationRequest`, status, creation and claim timestamps, nullable simulation ID, nullable terminal timestamp, and nullable failure message. `ISimulationJobRepository` supports creation, retrieval by ID, claiming, and the two conditional terminal transitions. `CompleteSimulationJobHandler` and `FailSimulationJobHandler` delegate to those operations; a `null` result reports that the job was not in `Running`, and both handlers preserve the repository's returned result and cancellation token. Failure descriptions must be nonblank and no longer than 1,000 characters; any future worker must provide a sanitized, non-sensitive summary rather than exception stack traces or internal database details.
 
-Application remains independent of EF Core, PostgreSQL, ASP.NET Core, hosted services, and queue implementations. Claiming does not execute a simulation, calculate states, persist a completed simulation, start a worker, or enqueue an in-memory message.
+`ProcessNextSimulationJobHandler` composes the existing claim, calculation, and failure use cases with `ISimulationJobCompletionRepository`, a provider-independent port for atomically saving a `RunSimulationResult` and completing its job. It returns `ProcessNextSimulationJobResult.NoWork` when no job is claimed, or `ProcessNextSimulationJobResult.Completed` with the completed job ID and generated simulation ID after successful finalization. It uses the exact stored request through `RunSimulationHandler` and does not duplicate mathematical behavior or use `RunAndSaveSimulationHandler`.
+
+The handler validates claimed and completed snapshots as contracts; invalid snapshots and rejected atomic completion are not treated as calculation failures. Exceptions from calculation or finalization attempt a `Failed` transition using a fixed safe phase description, then rethrow the original exception even if recording failure also fails. `OperationCanceledException` is not converted into `Failed`. Calculation itself is synchronous, so cancellation is observed at boundaries before and after calculation rather than interrupting it mid-execution.
+
+Application remains independent of EF Core, PostgreSQL, ASP.NET Core, hosted services, and queue implementations. Claiming alone does not execute a simulation; the one-job handler is an explicit use case but is not yet called by a worker or API runtime.
 
 The application project depends on `SingularFlow.Domain` and has no dependency on EF Core, PostgreSQL, Infrastructure, or ASP.NET Core.
 
@@ -579,6 +593,7 @@ Responsibilities include:
 * Tracking `20260921055058_InitialPersistence`, `20261002042411_AddSimulationJobs`, `20261015035419_AddSimulationJobClaimedAtUtc`, and `20261015052532_AddSimulationJobTerminalTransitions`.
 * Implementing `ISimulationRepository` with `EfSimulationRepository`.
 * Implementing `ISimulationJobRepository` with `EfSimulationJobRepository` for job creation, retrieval, atomic claiming, and conditional terminal transitions.
+* Implementing `ISimulationJobCompletionRepository` with `EfSimulationJobCompletionRepository`.
 * Saving one simulation and all ordered state entities with one `SaveChangesAsync` call.
 * Returning the generated simulation ID and database-generated creation timestamp after saving.
 * Querying simulations by persisted ID with `AsNoTracking()` and loading their related states.
@@ -591,11 +606,15 @@ Responsibilities include:
 
 `EfSimulationJobRepository` persists all six original request values, explicitly creates a `Pending` job with a null claim timestamp, and uses one `SaveChangesAsync` operation with the caller's cancellation token. It returns the EF-generated UUID and PostgreSQL-generated creation timestamp. Retrieval is by primary-key ID with `AsNoTracking`, reconstructs the original `RunSimulationRequest`, maps nullable lifecycle fields, and returns `null` when the ID is missing.
 
-Claiming uses one parameterized PostgreSQL statement rather than `SaveChangesAsync` or a tracked entity. It selects the oldest unlocked `Pending` row by `created_at_utc` and then `id`, locks it with `FOR UPDATE SKIP LOCKED`, updates it to `Running`, assigns `claimed_at_utc = CURRENT_TIMESTAMP`, and returns the complete job result. Completion and failure each use a parameterized conditional `UPDATE ... RETURNING` requiring `status = 'Running'`, and set `finished_at_utc = CURRENT_TIMESTAMP`. Completion associates the existing simulation ID; failure stores a bounded description. A missing or non-`Running` job returns `null`, preventing duplicate or conflicting terminal operations from overwriting state. These commands enlist in an existing EF transaction when present; otherwise PostgreSQL autocommit provides single-statement atomicity. They do not require a tracked job entity. A missing simulation ID fails through the foreign-key constraint. Neither the job repository nor any job handler is registered in dependency injection because no runtime consumer exists.
+Claiming uses one parameterized PostgreSQL statement rather than `SaveChangesAsync` or a tracked entity. It selects the oldest unlocked `Pending` row by `created_at_utc` and then `id`, locks it with `FOR UPDATE SKIP LOCKED`, updates it to `Running`, assigns `claimed_at_utc = CURRENT_TIMESTAMP`, and returns the complete job result. Completion and failure each use a parameterized conditional `UPDATE ... RETURNING` requiring `status = 'Running'`, and set `finished_at_utc = CURRENT_TIMESTAMP`. Completion associates the existing simulation ID; failure stores a bounded description. A missing or non-`Running` job returns `null`, preventing duplicate or conflicting terminal operations from overwriting state. These commands enlist in an existing EF transaction when present; otherwise PostgreSQL autocommit provides single-statement atomicity. They do not require a tracked job entity. A missing simulation ID fails through the foreign-key constraint.
+
+`EfSimulationJobCompletionRepository` reuses `EfSimulationRepository` and `EfSimulationJobRepository` with the same `SingularFlowDbContext`, making simulation persistence, ordered-state insertion, and conditional completion one atomic operation. Without a current transaction it owns and commits a transaction only after completion succeeds. Within a caller-owned transaction it creates and releases a savepoint; rejection or an exception rolls back only to that savepoint and leaves the caller transaction under caller control. A null transition result is returned only after rollback succeeds. Entities introduced by a rolled-back attempt are selectively detached, while pre-existing tracked entities are preserved. Because the existing simulation save uses context-wide `SaveChangesAsync`, the operation rejects contexts that already have pending Added, Modified, or Deleted changes rather than risking flushing unrelated work. It does not clear the change tracker.
+
+Neither the job repository nor any job handler is registered in dependency injection because no runtime consumer exists.
 
 Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. EF Core remains confined to Infrastructure and the API composition root; Application and Domain do not depend on it.
 
-The persisted simulation query and deletion features use their existing schema. The second migration introduces the separate job table, the third adds its nullable claim timestamp, and the fourth adds terminal-transition metadata and the optional simulation relationship.
+The persisted simulation query and deletion features use their existing schema. The second migration introduces the separate job table, the third adds its nullable claim timestamp, and the fourth adds terminal-transition metadata and the optional simulation relationship. The one-job orchestration and atomic completion implementation uses that existing schema: it adds no migration, entity, relationship, or model change. The latest migration remains `20261015052532_AddSimulationJobTerminalTransitions`; the pending-model-changes check detected no differences.
 
 ### SingularFlow.Cli
 
@@ -642,7 +661,7 @@ The test project depends directly on `SingularFlow.Domain`.
 
 Contains automated tests for application use-case behavior.
 
-The twenty-six application tests verify:
+The 51 application tests verify:
 
 * Rejection of a null simulation request.
 * Execution with uniform sampling.
@@ -693,7 +712,7 @@ The test project depends directly on `SingularFlow.Api`.
 
 ### SingularFlow.Infrastructure.Tests
 
-Contains 39 automated tests for EF Core model metadata, design-time context creation, repository persistence, atomic simulation-job claiming, and terminal transitions.
+Contains 50 automated tests for EF Core model metadata, design-time context creation, repository persistence, atomic simulation-job claiming, terminal transitions, and atomic simulation-job completion.
 
 The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. Repository integration tests also verify total count, page metadata, stable descending ordering, first and later pages, summary projection, an out-of-range page with empty items and the original total count, deletion of an existing simulation and its states, and `false` for a missing deletion ID. The database tests apply pending migrations and use reversible transactions for inserted repository data.
 
@@ -908,7 +927,7 @@ This avoids exposing small accumulated floating-point differences at the configu
 
 It hosts the simulation controller alongside the health and Development OpenAPI endpoints.
 
-The public API remains synchronous: `POST /api/simulations` calculates and persists the completed simulation before returning `201 Created`; listing, retrieval, and deletion are unchanged. There is no simulation-job endpoint, `202 Accepted` response, or job operation in OpenAPI. `Program.cs` registers neither the job handler nor job repository and registers no hosted worker.
+The public API remains synchronous: `POST /api/simulations` calculates and persists the completed simulation before returning `201 Created`; listing, retrieval, and deletion are unchanged. The one-job Application orchestration is not registered or invoked by `Program.cs`. There is no simulation-job submission or status endpoint, `202 Accepted` response, job operation in OpenAPI, hosted worker, or runtime polling loop.
 
 ### Dedicated HTTP contracts
 
@@ -1475,16 +1494,16 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The latest validation passed all 130 automated test cases with 0 failed and 0 skipped. They are distributed across:
+The latest validation passed all 166 automated test cases with 0 failed and 0 skipped. They are distributed across:
 
 * 42 Domain unit tests.
-* 26 Application unit tests.
+* 51 Application unit tests.
 * 23 API tests.
-* 39 Infrastructure tests.
+* 50 Infrastructure tests.
 
-The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, total-page calculation, deletion delegation with Boolean-result, ID, and cancellation-token propagation, job creation, claim, completion, and failure delegation, exact token and argument forwarding, unchanged result/null propagation, failure-description validation, and stable lifecycle enum names and numeric values. The API tests cover healthy liveness, healthy readiness against `singular_flow_tests`, the compatibility `/health` endpoint, database-unavailable behavior, liveness remaining healthy during dependency failure, readiness returning `503`, health endpoints remaining outside OpenAPI, documented simulation operations, response codes and pagination parameter names, valid requests, request failures, persistence delegation, resource queries and deletions, pagination, and the real HTTP-to-PostgreSQL lifecycle. The unavailable-database test uses a deliberately unreachable local port with short timeouts; it does not stop Docker or mutate the test database. The simulation lifecycle test verifies creation, retrieval, listing, deletion, a subsequent GET `404`, and direct database confirmation that both the simulation and its child states are gone.
+The Application unit tests cover collection-handler delegation, invalid page numbers and page sizes, total-page calculation, deletion delegation with Boolean-result, ID, and cancellation-token propagation, job creation, claim, completion, and failure delegation, and the one-job processing flow. Processing tests verify no-work results, exact stored-request and token forwarding, valid claims, cancellation boundaries, completion result validation, safe failure transitions after calculation or finalization exceptions, and preservation of the original exception when failure recording also fails. Other job tests cover unchanged result/null propagation, failure-description validation, and stable lifecycle enum names and numeric values. The API tests cover healthy liveness, healthy readiness against `singular_flow_tests`, the compatibility `/health` endpoint, database-unavailable behavior, liveness remaining healthy during dependency failure, readiness returning `503`, health endpoints remaining outside OpenAPI, documented simulation operations, response codes and pagination parameter names, valid requests, request failures, persistence delegation, resource queries and deletions, pagination, and the real HTTP-to-PostgreSQL lifecycle. The unavailable-database test uses a deliberately unreachable local port with short timeouts; it does not stop Docker or mutate the test database. The simulation lifecycle test verifies creation, retrieval, listing, deletion, a subsequent GET `404`, and direct database confirmation that both the simulation and its child states are gone.
 
-Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. Repository tests also reject null job-creation requests without database access. Job metadata tests verify nullable terminal columns, the 1,000-character failure-message limit, the lifecycle constraint, the optional simulation foreign key, `ON DELETE SET NULL`, and both job indexes. PostgreSQL repository tests verify simulation persistence plus job creation and retrieval, atomic claim behavior, successful `Running`-to-`Completed` and `Running`-to-`Failed` transitions, invalid and duplicate transition rejection, a missing-simulation foreign-key violation, database-generated terminal timestamps, completed-job retrieval, simulation deletion clearing only the job reference, transaction enlistment and rollback, connection-state preservation, a concurrent completion/failure race with exactly one winner, and exact-ID cleanup. The test-database guard requires `singular_flow_tests`. These counts describe test cases, not migration-generation or manual validation commands.
+Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. Repository tests also reject null job-creation requests without database access. Job metadata tests verify nullable terminal columns, the 1,000-character failure-message limit, the lifecycle constraint, the optional simulation foreign key, `ON DELETE SET NULL`, and both job indexes. PostgreSQL repository tests verify simulation persistence plus job creation and retrieval, atomic claim behavior, successful `Running`-to-`Completed` and `Running`-to-`Failed` transitions, invalid and duplicate transition rejection, a missing-simulation foreign-key violation, database-generated terminal timestamps, completed-job retrieval, simulation deletion clearing only the job reference, transaction enlistment and rollback, connection-state preservation, and a concurrent completion/failure race with exactly one winner. Atomic job completion tests verify simulation and ordered-state persistence with job completion, rejection of non-`Running` jobs, rollback after a PostgreSQL child-state constraint violation, same-context tracker cleanup after rollback, caller-owned transaction/savepoint behavior, rejection of pre-existing tracked changes without flushing them, cancellation, and input validation. Multi-connection tests clean up only their exact seeded job IDs. The test-database guard requires `singular_flow_tests`. These counts describe test cases, not migration-generation or manual validation commands.
 
 ## Code formatting
 
@@ -1643,6 +1662,10 @@ The project is developed incrementally.
 * [x] Record a database-generated terminal timestamp and bounded failure description.
 * [x] Relate completed jobs to simulations through an optional foreign key with `ON DELETE SET NULL`.
 * [x] Enforce job lifecycle invariants and test duplicate and concurrent terminal transitions.
+* [x] Add an Application handler that processes at most one claimed simulation job per invocation.
+* [x] Persist the generated simulation and complete its job atomically through a provider-independent Application contract.
+* [x] Preserve caller-owned transactions with savepoint-based finalization and reject pre-existing tracked changes.
+* [x] Test processing failures, cancellation behavior, transaction ownership, persistence rollback, and change-tracker cleanup.
 * [ ] Register job services when an actual runtime consumer is introduced.
 * [ ] Add a public job API and `202 Accepted` behavior.
 * [ ] Execute simulations through background workers.
