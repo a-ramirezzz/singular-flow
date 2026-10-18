@@ -6,12 +6,12 @@ using Microsoft.AspNetCore.Mvc.Testing;
 namespace SingularFlow.Api.Tests.OpenApi;
 
 public sealed class OpenApiEndpointTests :
-    IClassFixture<WebApplicationFactory<Program>>
+    IClassFixture<SingularFlowApiFactory>
 {
     private readonly HttpClient _client;
 
     public OpenApiEndpointTests(
-        WebApplicationFactory<Program> factory)
+        SingularFlowApiFactory factory)
     {
         WebApplicationFactoryClientOptions options = new()
         {

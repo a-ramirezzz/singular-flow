@@ -22,7 +22,7 @@ public sealed class SimulationDeletionEndpointTests
             ExistingId);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureTestServices(services =>
@@ -65,7 +65,7 @@ public sealed class SimulationDeletionEndpointTests
             ExistingId);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureTestServices(services =>

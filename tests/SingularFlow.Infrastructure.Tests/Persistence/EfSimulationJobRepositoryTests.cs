@@ -51,7 +51,8 @@ public sealed class EfSimulationJobRepositoryTests
         await context.Database.MigrateAsync();
 
         await using var transaction =
-            await context.Database.BeginTransactionAsync();
+            await context.Database.BeginTransactionAsync(
+                IsolationLevel.RepeatableRead);
 
         RunSimulationRequest request = new(
             SingularTime: 2.5,
