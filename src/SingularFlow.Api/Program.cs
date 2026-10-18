@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 
 using SingularFlow.Api.ErrorHandling;
+using SingularFlow.Api.Workers;
+using SingularFlow.Application.SimulationJobs;
 using SingularFlow.Application.Simulations;
 using SingularFlow.Infrastructure.Persistence;
 
@@ -30,6 +32,24 @@ builder.Services.AddScoped<ListSimulationsHandler>();
 
 builder.Services.AddScoped<DeleteSimulationHandler>();
 
+builder.Services
+    .AddOptions<SimulationJobWorkerOptions>()
+    .BindConfiguration(
+        SimulationJobWorkerOptions.SectionName)
+    .Validate(
+        options => options.PollingInterval > TimeSpan.Zero,
+        "SimulationJobs:Worker:PollingInterval must be greater than 00:00:00.")
+    .Validate(
+        options => options.PollingInterval <= TimeSpan.FromMinutes(5),
+        "SimulationJobs:Worker:PollingInterval must not exceed 00:05:00.")
+    .Validate(
+        options => options.FailureDelay > TimeSpan.Zero,
+        "SimulationJobs:Worker:FailureDelay must be greater than 00:00:00.")
+    .Validate(
+        options => options.FailureDelay <= TimeSpan.FromMinutes(5),
+        "SimulationJobs:Worker:FailureDelay must not exceed 00:05:00.")
+    .ValidateOnStart();
+
 builder.Services.AddDbContext<SingularFlowDbContext>(options =>
 {
     string connectionString =
@@ -43,6 +63,26 @@ builder.Services.AddDbContext<SingularFlowDbContext>(options =>
 builder.Services.AddScoped<
     ISimulationRepository,
     EfSimulationRepository>();
+
+builder.Services.AddScoped<ClaimSimulationJobHandler>();
+
+builder.Services.AddScoped<FailSimulationJobHandler>();
+
+builder.Services.AddScoped<ProcessNextSimulationJobHandler>();
+
+builder.Services.AddScoped<
+    ISimulationJobRepository,
+    EfSimulationJobRepository>();
+
+builder.Services.AddScoped<
+    ISimulationJobCompletionRepository,
+    EfSimulationJobCompletionRepository>();
+
+builder.Services.AddSingleton<
+    ISimulationJobWorkerDelay,
+    SimulationJobWorkerDelay>();
+
+builder.Services.AddHostedService<SimulationJobWorker>();
 
 var app = builder.Build();
 

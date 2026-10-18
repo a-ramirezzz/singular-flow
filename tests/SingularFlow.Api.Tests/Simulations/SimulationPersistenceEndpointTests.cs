@@ -20,7 +20,7 @@ public sealed class SimulationPersistenceEndpointTests
         RecordingSimulationRepository repository = new();
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureTestServices(services =>

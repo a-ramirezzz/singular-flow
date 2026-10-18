@@ -34,7 +34,7 @@ public sealed class SimulationDatabaseEndpointTests
             parsedConnection.Database);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureAppConfiguration(

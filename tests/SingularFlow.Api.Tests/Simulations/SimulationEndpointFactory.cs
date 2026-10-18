@@ -9,11 +9,13 @@ using SingularFlow.Application.Simulations;
 namespace SingularFlow.Api.Tests.Simulations;
 
 public sealed class SimulationEndpointFactory :
-    WebApplicationFactory<Program>
+    SingularFlowApiFactory
 {
     protected override void ConfigureWebHost(
         IWebHostBuilder builder)
     {
+        base.ConfigureWebHost(builder);
+
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<ISimulationRepository>();

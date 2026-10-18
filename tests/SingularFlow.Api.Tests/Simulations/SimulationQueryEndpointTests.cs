@@ -22,7 +22,7 @@ public sealed class SimulationQueryEndpointTests
             persisted);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureTestServices(services =>
@@ -87,7 +87,7 @@ public sealed class SimulationQueryEndpointTests
             persisted);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureTestServices(services =>

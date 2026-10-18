@@ -5,12 +5,12 @@ using Microsoft.AspNetCore.Mvc.Testing;
 namespace SingularFlow.Api.Tests.Health;
 
 public sealed class HealthEndpointTests :
-    IClassFixture<WebApplicationFactory<Program>>
+    IClassFixture<SingularFlowApiFactory>
 {
     private readonly HttpClient _client;
 
     public HealthEndpointTests(
-        WebApplicationFactory<Program> factory)
+        SingularFlowApiFactory factory)
     {
         WebApplicationFactoryClientOptions options = new()
         {

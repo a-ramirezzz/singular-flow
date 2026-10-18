@@ -30,7 +30,7 @@ public sealed class DatabaseHealthEndpointTests
             parsedConnection.Database);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureAppConfiguration(
@@ -93,7 +93,7 @@ public sealed class DatabaseHealthEndpointTests
             unavailableConnection.Database);
 
         using WebApplicationFactory<Program> factory =
-            new WebApplicationFactory<Program>()
+            new SingularFlowApiFactory()
                 .WithWebHostBuilder(builder =>
                 {
                     builder.ConfigureAppConfiguration(
