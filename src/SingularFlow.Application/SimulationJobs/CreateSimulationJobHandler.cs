@@ -16,6 +16,8 @@ public sealed class CreateSimulationJobHandler
         RunSimulationRequest request,
         CancellationToken cancellationToken)
     {
+        SimulationRequestValidator.Validate(request);
+
         return _repository.CreateAsync(
             request,
             cancellationToken);
