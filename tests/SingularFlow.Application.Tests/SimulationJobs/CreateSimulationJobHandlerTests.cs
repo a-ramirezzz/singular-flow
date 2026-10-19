@@ -63,6 +63,43 @@ public sealed class CreateSimulationJobHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_InvalidRequest_ThrowsBeforeRepositoryInvocation()
+    {
+        RunSimulationRequest request = new(
+            SingularTime: 1.0,
+            ConcentrationExponent: 0.005,
+            StartTime: 0.0,
+            EndTime: 1.0,
+            SampleCount: 3,
+            SamplingMode: SamplingMode.Uniform);
+
+        SimulationJobResult repositoryResult = new(
+            Id: JobId,
+            Request: request,
+            Status: SimulationJobStatus.Pending,
+            CreatedAtUtc: CreatedAtUtc,
+            ClaimedAtUtc: null,
+            SimulationId: null,
+            FinishedAtUtc: null,
+            FailureMessage: null);
+
+        RecordingSimulationJobRepository repository = new(
+            repositoryResult);
+
+        CreateSimulationJobHandler handler = new(
+            repository);
+
+        ArgumentOutOfRangeException exception =
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                () => handler.HandleAsync(
+                    request,
+                    CancellationToken.None));
+
+        Assert.Equal("seriesParameters", exception.ParamName);
+        Assert.Equal(0, repository.InvocationCount);
+    }
+
+    [Fact]
     public void SimulationJobStatus_DefinesExpectedLifecycleValues()
     {
         string[] names =

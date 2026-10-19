@@ -1,5 +1,6 @@
 @SingularFlow.Api_HostAddress = http://localhost:5278
 @SimulationId = replace-with-a-simulation-id
+@simulationJobId = replace-with-returned-job-id
 
 ### Liveness health check
 
@@ -20,6 +21,31 @@ Accept: text/plain
 
 GET {{SingularFlow.Api_HostAddress}}/openapi/v1.json
 Accept: application/json
+
+### Submit a durable simulation job
+# Returns 202 Accepted. Copy the returned id into simulationJobId above.
+# Processing occurs asynchronously through the hosted worker.
+
+POST {{SingularFlow.Api_HostAddress}}/api/simulation-jobs
+Content-Type: application/json
+Accept: application/json
+
+{
+  "singularTime": 1.0,
+  "concentrationExponent": 0.005,
+  "startTime": 0.0,
+  "endTime": 0.9,
+  "sampleCount": 100,
+  "samplingMode": "logarithmic"
+}
+
+### Get durable simulation-job status
+# Uses the id returned by the submission request above.
+
+GET {{SingularFlow.Api_HostAddress}}/api/simulation-jobs/{{simulationJobId}}
+Accept: application/json
+
+### Synchronous simulation examples remain available below
 
 ### Run logarithmic simulation
 

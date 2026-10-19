@@ -9,56 +9,26 @@ public sealed class RunSimulationHandler
     public RunSimulationResult Handle(
         RunSimulationRequest request)
     {
-        ArgumentNullException.ThrowIfNull(request);
-
-        ITimeSamplingStrategy samplingStrategy =
-            CreateSamplingStrategy(
-                request.SamplingMode);
-
-        BlowupParameters blowupParameters = new(
-            singularTime: request.SingularTime,
-            concentrationExponent:
-                request.ConcentrationExponent);
-
-        TimeSeriesParameters timeSeriesParameters = new(
-            startTime: request.StartTime,
-            endTime: request.EndTime,
-            sampleCount: request.SampleCount);
+        ValidatedSimulationRequest validatedRequest =
+            SimulationRequestValidator.Validate(request);
 
         BlowupScalingCalculator calculator = new();
 
         BlowupSeriesGenerator seriesGenerator = new(
             calculator,
-            samplingStrategy);
+            validatedRequest.SamplingStrategy);
 
         IReadOnlyList<BlowupState> states =
             seriesGenerator.Generate(
-                blowupParameters,
-                timeSeriesParameters);
+                validatedRequest.BlowupParameters,
+                validatedRequest.TimeSeriesParameters);
 
         return new RunSimulationResult(
-            BlowupParameters: blowupParameters,
-            TimeSeriesParameters: timeSeriesParameters,
+            BlowupParameters:
+                validatedRequest.BlowupParameters,
+            TimeSeriesParameters:
+                validatedRequest.TimeSeriesParameters,
             SamplingMode: request.SamplingMode,
             States: states);
-    }
-
-    private static ITimeSamplingStrategy
-        CreateSamplingStrategy(
-            SamplingMode samplingMode)
-    {
-        return samplingMode switch
-        {
-            SamplingMode.Uniform =>
-                new UniformTimeSamplingStrategy(),
-
-            SamplingMode.Logarithmic =>
-                new LogarithmicTimeSamplingStrategy(),
-
-            _ => throw new ArgumentOutOfRangeException(
-                nameof(samplingMode),
-                samplingMode,
-                "Sampling mode is not supported.")
-        };
     }
 }

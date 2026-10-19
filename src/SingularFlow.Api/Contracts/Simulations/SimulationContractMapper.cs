@@ -113,7 +113,7 @@ internal static class SimulationContractMapper
         };
     }
 
-    private static string ToApiValue(
+    internal static string ToApiValue(
         SamplingMode samplingMode)
     {
         return samplingMode switch

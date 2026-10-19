@@ -52,6 +52,8 @@ public sealed class SimulationJobWorkerCompositionTests
                     AssertScopedRegistration<ClaimSimulationJobHandler>(services);
                     AssertScopedRegistration<FailSimulationJobHandler>(services);
                     AssertScopedRegistration<ProcessNextSimulationJobHandler>(services);
+                    AssertScopedRegistration<CreateSimulationJobHandler>(services);
+                    AssertScopedRegistration<GetSimulationJobHandler>(services);
                     AssertSingletonRegistration<ISimulationJobWorkerDelay,
                         SimulationJobWorkerDelay>(services);
                     Assert.Single(
@@ -84,10 +86,6 @@ public sealed class SimulationJobWorkerCompositionTests
                         services,
                         service => service.ServiceType ==
                             typeof(CompleteSimulationJobHandler));
-                    Assert.DoesNotContain(
-                        services,
-                        service => service.ServiceType ==
-                            typeof(CreateSimulationJobHandler));
                     Assert.DoesNotContain(
                         services,
                         service => service.ServiceType ==
@@ -135,6 +133,10 @@ public sealed class SimulationJobWorkerCompositionTests
             first.GetRequiredService<FailSimulationJobHandler>();
         ProcessNextSimulationJobHandler process =
             first.GetRequiredService<ProcessNextSimulationJobHandler>();
+        CreateSimulationJobHandler create =
+            first.GetRequiredService<CreateSimulationJobHandler>();
+        GetSimulationJobHandler get =
+            first.GetRequiredService<GetSimulationJobHandler>();
         ISimulationJobRepository jobs =
             first.GetRequiredService<ISimulationJobRepository>();
         ISimulationJobCompletionRepository completion =
@@ -145,6 +147,8 @@ public sealed class SimulationJobWorkerCompositionTests
         Assert.NotNull(claim);
         Assert.NotNull(fail);
         Assert.NotNull(process);
+        Assert.NotNull(create);
+        Assert.NotNull(get);
         Assert.IsType<ControlledSimulationJobRepository>(jobs);
         Assert.IsType<ControlledSimulationJobCompletionRepository>(completion);
         Assert.Equal(
@@ -156,6 +160,12 @@ public sealed class SimulationJobWorkerCompositionTests
         Assert.Same(
             process,
             first.GetRequiredService<ProcessNextSimulationJobHandler>());
+        Assert.Same(
+            create,
+            first.GetRequiredService<CreateSimulationJobHandler>());
+        Assert.Same(
+            get,
+            first.GetRequiredService<GetSimulationJobHandler>());
         Assert.Same(jobs, first.GetRequiredService<ISimulationJobRepository>());
         Assert.Same(
             completion,
@@ -178,6 +188,12 @@ public sealed class SimulationJobWorkerCompositionTests
             process,
             second.GetRequiredService<ProcessNextSimulationJobHandler>());
         Assert.NotSame(
+            create,
+            second.GetRequiredService<CreateSimulationJobHandler>());
+        Assert.NotSame(
+            get,
+            second.GetRequiredService<GetSimulationJobHandler>());
+        Assert.NotSame(
             jobs,
             second.GetRequiredService<ISimulationJobRepository>());
         Assert.NotSame(
@@ -193,7 +209,6 @@ public sealed class SimulationJobWorkerCompositionTests
             firstDelay,
             second.GetRequiredService<ISimulationJobWorkerDelay>());
         Assert.Null(first.GetService<CompleteSimulationJobHandler>());
-        Assert.Null(first.GetService<CreateSimulationJobHandler>());
         Assert.Null(first.GetService<EfSimulationRepository>());
         Assert.Null(first.GetService<EfSimulationJobRepository>());
         Assert.Null(first.GetService<EfSimulationJobCompletionRepository>());

@@ -32,6 +32,10 @@ builder.Services.AddScoped<ListSimulationsHandler>();
 
 builder.Services.AddScoped<DeleteSimulationHandler>();
 
+builder.Services.AddScoped<CreateSimulationJobHandler>();
+
+builder.Services.AddScoped<GetSimulationJobHandler>();
+
 builder.Services
     .AddOptions<SimulationJobWorkerOptions>()
     .BindConfiguration(
