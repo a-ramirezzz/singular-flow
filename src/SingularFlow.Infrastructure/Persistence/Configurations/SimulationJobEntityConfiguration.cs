@@ -49,25 +49,36 @@ internal sealed class SimulationJobEntityConfiguration :
                     "ck_simulation_jobs_lifecycle",
                     "(\"status\" = 'Pending' AND " +
                     "\"claimed_at_utc\" IS NULL AND " +
+                    "\"claim_token\" IS NULL AND " +
+                    "\"lease_expires_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
                     "\"failure_message\" IS NULL) OR " +
                     "(\"status\" = 'Running' AND " +
                     "\"claimed_at_utc\" IS NOT NULL AND " +
+                    "\"claim_token\" IS NOT NULL AND " +
+                    "\"lease_expires_at_utc\" IS NOT NULL AND " +
+                    "\"lease_expires_at_utc\" > \"claimed_at_utc\" AND " +
                     "\"finished_at_utc\" IS NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
                     "\"failure_message\" IS NULL) OR " +
                     "(\"status\" = 'Completed' AND " +
                     "\"claimed_at_utc\" IS NOT NULL AND " +
+                    "\"claim_token\" IS NULL AND " +
+                    "\"lease_expires_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NOT NULL AND " +
                     "\"failure_message\" IS NULL) OR " +
                     "(\"status\" = 'Failed' AND " +
                     "\"claimed_at_utc\" IS NOT NULL AND " +
+                    "\"claim_token\" IS NULL AND " +
+                    "\"lease_expires_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NOT NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
                     "\"failure_message\" IS NOT NULL AND " +
                     "\"failure_message\" ~ '[^[:space:]]') OR " +
                     "(\"status\" = 'Cancelled' AND " +
+                    "\"claim_token\" IS NULL AND " +
+                    "\"lease_expires_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
                     "\"failure_message\" IS NULL)");
@@ -138,6 +149,16 @@ internal sealed class SimulationJobEntityConfiguration :
             .HasColumnType("timestamp with time zone");
 
         builder
+            .Property(job => job.ClaimToken)
+            .HasColumnName("claim_token")
+            .HasColumnType("uuid");
+
+        builder
+            .Property(job => job.LeaseExpiresAtUtc)
+            .HasColumnName("lease_expires_at_utc")
+            .HasColumnType("timestamp with time zone");
+
+        builder
             .Property(job => job.SimulationId)
             .HasColumnName("simulation_id")
             .HasColumnType("uuid");
@@ -163,6 +184,16 @@ internal sealed class SimulationJobEntityConfiguration :
             })
             .HasDatabaseName(
                 "ix_simulation_jobs_status_created_at_utc_id");
+
+        builder
+            .HasIndex(job => new
+            {
+                job.Status,
+                job.LeaseExpiresAtUtc,
+                job.Id
+            })
+            .HasDatabaseName(
+                "ix_simulation_jobs_status_lease_expires_at_utc_id");
 
         builder
             .HasIndex(job => job.SimulationId)

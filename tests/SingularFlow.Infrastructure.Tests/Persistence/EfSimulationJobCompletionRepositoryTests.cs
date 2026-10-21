@@ -33,6 +33,9 @@ public sealed class EfSimulationJobCompletionRepositoryTests
     private static readonly RunSimulationResult Simulation =
         CreateSimulation();
 
+    private static readonly Guid ClaimToken =
+        Guid.Parse("c24564dd-e33e-4ea8-98c9-9f2a65a0265d");
+
     [Fact]
     public async Task SaveSimulationAndCompleteAsync_ValidRunningJob_CommitsSimulationStatesAndCompletion()
     {
@@ -53,6 +56,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             SimulationJobResult? completed =
                 await repository.SaveSimulationAndCompleteAsync(
                     jobId,
+                    ClaimToken,
                     Simulation,
                     CancellationToken.None);
 
@@ -75,6 +79,8 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             Assert.Equal(completed.Status, persistedJob.Status);
             Assert.Equal(completed.FinishedAtUtc, persistedJob.FinishedAtUtc);
             Assert.Null(persistedJob.FailureMessage);
+            Assert.Null(persistedJob.ClaimToken);
+            Assert.Null(persistedJob.LeaseExpiresAtUtc);
 
             SimulationEntity? persistedSimulation =
                 await verification.Simulations
@@ -188,6 +194,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             SimulationJobResult? result =
                 await repository.SaveSimulationAndCompleteAsync(
                     jobId,
+                    ClaimToken,
                     Simulation,
                     CancellationToken.None);
 
@@ -265,6 +272,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
                 await Assert.ThrowsAsync<DbUpdateException>(
                     () => repository.SaveSimulationAndCompleteAsync(
                         jobId,
+                        ClaimToken,
                         Simulation,
                         CancellationToken.None));
 
@@ -294,6 +302,8 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             Assert.Null(job.SimulationId);
             Assert.Null(job.FinishedAtUtc);
             Assert.Null(job.FailureMessage);
+            Assert.Equal(ClaimToken, job.ClaimToken);
+            Assert.NotNull(job.LeaseExpiresAtUtc);
             Assert.False(
                 await context.Simulations
                     .AnyAsync(entity => entity.Id == simulationId));
@@ -321,6 +331,8 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             Assert.Null(jobAfterFollowUpSave.SimulationId);
             Assert.Null(jobAfterFollowUpSave.FinishedAtUtc);
             Assert.Null(jobAfterFollowUpSave.FailureMessage);
+            Assert.Equal(ClaimToken, jobAfterFollowUpSave.ClaimToken);
+            Assert.NotNull(jobAfterFollowUpSave.LeaseExpiresAtUtc);
         }
         finally
         {
@@ -356,6 +368,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => repository.SaveSimulationAndCompleteAsync(
                     jobId,
+                    ClaimToken,
                     Simulation,
                     cancellation.Token));
 
@@ -367,6 +380,8 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             Assert.Null(job.SimulationId);
             Assert.Null(job.FinishedAtUtc);
             Assert.Null(job.FailureMessage);
+            Assert.Equal(ClaimToken, job.ClaimToken);
+            Assert.NotNull(job.LeaseExpiresAtUtc);
             Assert.Empty(context.ChangeTracker.Entries<SimulationEntity>());
             Assert.Empty(context.ChangeTracker.Entries<SimulationStateEntity>());
             Assert.Null(capture.SimulationId);
@@ -418,6 +433,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             SimulationJobResult? result =
                 await repository.SaveSimulationAndCompleteAsync(
                     missingJobId,
+                    ClaimToken,
                     Simulation,
                     CancellationToken.None);
 
@@ -533,6 +549,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
                 await Assert.ThrowsAsync<InvalidOperationException>(
                     () => repository.SaveSimulationAndCompleteAsync(
                         jobId,
+                        ClaimToken,
                         Simulation,
                         CancellationToken.None));
 
@@ -548,6 +565,8 @@ public sealed class EfSimulationJobCompletionRepositoryTests
                     .SingleAsync(entity => entity.Id == jobId);
             Assert.Equal(SimulationJobStatus.Running, job.Status);
             Assert.Null(job.SimulationId);
+            Assert.Equal(ClaimToken, job.ClaimToken);
+            Assert.NotNull(job.LeaseExpiresAtUtc);
 
             SimulationEntity persistedSimulation =
                 await context.Simulations
@@ -582,6 +601,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             await Assert.ThrowsAsync<ArgumentException>(
                 () => repository.SaveSimulationAndCompleteAsync(
                     Guid.Empty,
+                    ClaimToken,
                     Simulation,
                     CancellationToken.None));
 
@@ -604,6 +624,7 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             await Assert.ThrowsAsync<ArgumentNullException>(
                 () => repository.SaveSimulationAndCompleteAsync(
                     Guid.NewGuid(),
+                    ClaimToken,
                     null!,
                     CancellationToken.None));
 
@@ -713,6 +734,12 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             ClaimedAtUtc = status == SimulationJobStatus.Pending
                 ? null
                 : timestamp,
+            ClaimToken = status == SimulationJobStatus.Running
+                ? ClaimToken
+                : null,
+            LeaseExpiresAtUtc = status == SimulationJobStatus.Running
+                ? DateTimeOffset.UtcNow.AddMinutes(5)
+                : null,
             FinishedAtUtc = status is
                 SimulationJobStatus.Completed or
                 SimulationJobStatus.Failed

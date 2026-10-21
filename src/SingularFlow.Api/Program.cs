@@ -52,6 +52,33 @@ builder.Services
     .Validate(
         options => options.FailureDelay <= TimeSpan.FromMinutes(5),
         "SimulationJobs:Worker:FailureDelay must not exceed 00:05:00.")
+    .Validate(
+        options => options.LeaseDuration > TimeSpan.Zero,
+        "SimulationJobs:Worker:LeaseDuration must be greater than 00:00:00.")
+    .Validate(
+        options => options.LeaseDuration <= TimeSpan.FromMinutes(5),
+        "SimulationJobs:Worker:LeaseDuration must not exceed 00:05:00.")
+    .Validate(
+        options => options.HeartbeatInterval > TimeSpan.Zero,
+        "SimulationJobs:Worker:HeartbeatInterval must be greater than 00:00:00.")
+    .Validate(
+        options => options.HeartbeatInterval <= TimeSpan.FromMinutes(5),
+        "SimulationJobs:Worker:HeartbeatInterval must not exceed 00:05:00.")
+    .Validate(
+        options => options.HeartbeatInterval < options.LeaseDuration,
+        "SimulationJobs:Worker:HeartbeatInterval must be less than LeaseDuration.")
+    .Validate(
+        options => options.RecoveryInterval > TimeSpan.Zero,
+        "SimulationJobs:Worker:RecoveryInterval must be greater than 00:00:00.")
+    .Validate(
+        options => options.RecoveryInterval <= TimeSpan.FromMinutes(5),
+        "SimulationJobs:Worker:RecoveryInterval must not exceed 00:05:00.")
+    .Validate(
+        options => options.RecoveryBatchSize >= 1,
+        "SimulationJobs:Worker:RecoveryBatchSize must be at least 1.")
+    .Validate(
+        options => options.RecoveryBatchSize <= 1000,
+        "SimulationJobs:Worker:RecoveryBatchSize must not exceed 1000.")
     .ValidateOnStart();
 
 builder.Services.AddDbContext<SingularFlowDbContext>(options =>
@@ -68,11 +95,17 @@ builder.Services.AddScoped<
     ISimulationRepository,
     EfSimulationRepository>();
 
-builder.Services.AddScoped<ClaimSimulationJobHandler>();
-
 builder.Services.AddScoped<FailSimulationJobHandler>();
 
-builder.Services.AddScoped<ProcessNextSimulationJobHandler>();
+builder.Services.AddScoped<CompleteSimulationJobHandler>();
+
+builder.Services.AddScoped<ClaimSimulationJobLeaseHandler>();
+
+builder.Services.AddScoped<RenewSimulationJobLeaseHandler>();
+
+builder.Services.AddScoped<RecoverExpiredSimulationJobsHandler>();
+
+builder.Services.AddScoped<ProcessClaimedSimulationJobHandler>();
 
 builder.Services.AddScoped<
     ISimulationJobRepository,
@@ -82,9 +115,15 @@ builder.Services.AddScoped<
     ISimulationJobCompletionRepository,
     EfSimulationJobCompletionRepository>();
 
+builder.Services.AddScoped<
+    ISimulationJobLeaseRepository,
+    EfSimulationJobLeaseRepository>();
+
 builder.Services.AddSingleton<
     ISimulationJobWorkerDelay,
     SimulationJobWorkerDelay>();
+
+builder.Services.AddSingleton<SimulationJobLeaseSupervisor>();
 
 builder.Services.AddHostedService<SimulationJobWorker>();
 

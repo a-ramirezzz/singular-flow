@@ -14,49 +14,20 @@ namespace SingularFlow.Infrastructure.Persistence;
 public sealed class EfSimulationJobRepository :
     ISimulationJobRepository
 {
-    private const string ClaimNextPendingSql =
-        """
-        WITH next_job AS
-        (
-            SELECT id
-            FROM simulation_jobs
-            WHERE status = @pending_status
-            ORDER BY created_at_utc ASC, id ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-        )
-        UPDATE simulation_jobs AS job
-        SET
-            status = @running_status,
-            claimed_at_utc = CURRENT_TIMESTAMP
-        FROM next_job
-        WHERE job.id = next_job.id
-        RETURNING
-            job.id,
-            job.singular_time,
-            job.concentration_exponent,
-            job.start_time,
-            job.end_time,
-            job.sample_count,
-            job.sampling_mode,
-            job.status,
-            job.created_at_utc,
-            job.claimed_at_utc,
-            job.simulation_id,
-            job.finished_at_utc,
-            job.failure_message;
-        """;
-
-    private const string CompleteRunningJobSql =
+    private const string CompleteLeasedRunningJobSql =
         """
         UPDATE simulation_jobs
         SET
             status = @completed_status,
             simulation_id = @simulation_id,
             finished_at_utc = CURRENT_TIMESTAMP,
-            failure_message = NULL
+            failure_message = NULL,
+            claim_token = NULL,
+            lease_expires_at_utc = NULL
         WHERE id = @id
           AND status = @running_status
+          AND claim_token = @claim_token
+          AND lease_expires_at_utc >= CURRENT_TIMESTAMP
         RETURNING
             id,
             singular_time,
@@ -73,16 +44,20 @@ public sealed class EfSimulationJobRepository :
             failure_message;
         """;
 
-    private const string FailRunningJobSql =
+    private const string FailLeasedRunningJobSql =
         """
         UPDATE simulation_jobs
         SET
             status = @failed_status,
             simulation_id = NULL,
             finished_at_utc = CURRENT_TIMESTAMP,
-            failure_message = @failure_message
+            failure_message = @failure_message,
+            claim_token = NULL,
+            lease_expires_at_utc = NULL
         WHERE id = @id
           AND status = @running_status
+          AND claim_token = @claim_token
+          AND lease_expires_at_utc >= CURRENT_TIMESTAMP
         RETURNING
             id,
             singular_time,
@@ -152,121 +127,36 @@ public sealed class EfSimulationJobRepository :
 
     public Task<SimulationJobResult?> TryCompleteAsync(
         Guid jobId,
+        Guid claimToken,
         Guid simulationId,
         CancellationToken cancellationToken)
     {
         return ExecuteTransitionAsync(
-            CompleteRunningJobSql,
+            CompleteLeasedRunningJobSql,
             jobId,
             nameof(SimulationJobStatus.Completed),
             simulationId,
             failureMessage: null,
+            claimToken,
             cancellationToken);
     }
 
     public Task<SimulationJobResult?> TryFailAsync(
         Guid jobId,
+        Guid claimToken,
         string failureMessage,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(failureMessage);
-
-        if (failureMessage.Length >
-            SimulationJobResult.MaximumFailureMessageLength)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(failureMessage),
-                $"Failure message must not exceed " +
-                $"{SimulationJobResult.MaximumFailureMessageLength} " +
-                "characters.");
-        }
+        ValidateFailureMessage(failureMessage);
 
         return ExecuteTransitionAsync(
-            FailRunningJobSql,
+            FailLeasedRunningJobSql,
             jobId,
             nameof(SimulationJobStatus.Failed),
             simulationId: null,
-            failureMessage: failureMessage,
-            cancellationToken: cancellationToken);
-    }
-
-    public async Task<SimulationJobResult?> ClaimNextPendingAsync(
-        CancellationToken cancellationToken)
-    {
-        DbConnection connection =
-            _context.Database.GetDbConnection();
-        IDbContextTransaction? currentTransaction =
-            _context.Database.CurrentTransaction;
-        bool openedConnection =
-            connection.State != ConnectionState.Open;
-        Exception? operationException = null;
-
-        try
-        {
-            if (openedConnection)
-            {
-                await connection.OpenAsync(cancellationToken);
-            }
-
-            await using DbCommand command =
-                connection.CreateCommand();
-
-            command.CommandText = ClaimNextPendingSql;
-
-            if (currentTransaction is not null)
-            {
-                command.Transaction =
-                    currentTransaction.GetDbTransaction();
-            }
-
-            AddStringParameter(
-                command,
-                "pending_status",
-                nameof(SimulationJobStatus.Pending));
-            AddStringParameter(
-                command,
-                "running_status",
-                nameof(SimulationJobStatus.Running));
-
-            await using DbDataReader reader =
-                await command.ExecuteReaderAsync(
-                    cancellationToken);
-
-            if (!await reader.ReadAsync(cancellationToken))
-            {
-                return null;
-            }
-
-            SimulationJobResult result = Map(reader);
-
-            if (await reader.ReadAsync(cancellationToken))
-            {
-                throw new DataException(
-                    "Claim command returned more than one simulation job.");
-            }
-
-            return result;
-        }
-        catch (Exception exception)
-        {
-            operationException = exception;
-            throw;
-        }
-        finally
-        {
-            if (openedConnection &&
-                currentTransaction is null &&
-                connection.State != ConnectionState.Closed)
-            {
-                try
-                {
-                    await connection.CloseAsync();
-                }
-                catch when (operationException is not null)
-                {
-                }
-            }
-        }
+            failureMessage,
+            claimToken,
+            cancellationToken);
     }
 
     private static SimulationJobResult Map(
@@ -344,6 +234,7 @@ public sealed class EfSimulationJobRepository :
         string terminalStatus,
         Guid? simulationId,
         string? failureMessage,
+        Guid? claimToken,
         CancellationToken cancellationToken)
     {
         DbConnection connection =
@@ -379,6 +270,15 @@ public sealed class EfSimulationJobRepository :
                 command,
                 "running_status",
                 nameof(SimulationJobStatus.Running));
+
+            if (claimToken is not null)
+            {
+                AddParameter(
+                    command,
+                    "claim_token",
+                    DbType.Guid,
+                    claimToken.Value);
+            }
 
             if (terminalStatus ==
                 nameof(SimulationJobStatus.Completed))
@@ -481,6 +381,22 @@ public sealed class EfSimulationJobRepository :
 
         primaryException?.Throw();
         return result;
+    }
+
+    private static void ValidateFailureMessage(
+        string failureMessage)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(failureMessage);
+
+        if (failureMessage.Length >
+            SimulationJobResult.MaximumFailureMessageLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(failureMessage),
+                $"Failure message must not exceed " +
+                $"{SimulationJobResult.MaximumFailureMessageLength} " +
+                "characters.");
+        }
     }
 
     private static DbParameter AddParameter(

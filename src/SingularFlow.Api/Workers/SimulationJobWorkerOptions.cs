@@ -4,11 +4,22 @@ internal sealed class SimulationJobWorkerOptions
 {
     public const string SectionName = "SimulationJobs:Worker";
 
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get; init; } = true;
 
-    public TimeSpan PollingInterval { get; set; } =
+    public TimeSpan PollingInterval { get; init; } =
         TimeSpan.FromSeconds(5);
 
-    public TimeSpan FailureDelay { get; set; } =
+    public TimeSpan FailureDelay { get; init; } =
         TimeSpan.FromSeconds(10);
+
+    public TimeSpan LeaseDuration { get; init; } =
+        TimeSpan.FromSeconds(30);
+
+    public TimeSpan HeartbeatInterval { get; init; } =
+        TimeSpan.FromSeconds(10);
+
+    public TimeSpan RecoveryInterval { get; init; } =
+        TimeSpan.FromSeconds(30);
+
+    public int RecoveryBatchSize { get; init; } = 100;
 }

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -15,27 +14,30 @@ internal sealed class SimulationJobWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly SimulationJobWorkerOptions _options;
     private readonly ISimulationJobWorkerDelay _delay;
+    private readonly SimulationJobLeaseSupervisor _leaseSupervisor;
     private readonly ILogger<SimulationJobWorker> _logger;
 
     public SimulationJobWorker(
         IServiceScopeFactory scopeFactory,
         IOptions<SimulationJobWorkerOptions> options,
         ISimulationJobWorkerDelay delay,
+        SimulationJobLeaseSupervisor leaseSupervisor,
         ILogger<SimulationJobWorker> logger)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(delay);
+        ArgumentNullException.ThrowIfNull(leaseSupervisor);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopeFactory = scopeFactory;
         _options = options.Value;
         _delay = delay;
+        _leaseSupervisor = leaseSupervisor;
         _logger = logger;
     }
 
-    public override async Task StartAsync(
-        CancellationToken cancellationToken)
+    public override async Task StartAsync(CancellationToken cancellationToken)
     {
         if (!_options.Enabled)
         {
@@ -48,8 +50,7 @@ internal sealed class SimulationJobWorker : BackgroundService
         await base.StartAsync(cancellationToken);
     }
 
-    protected override async Task ExecuteAsync(
-        CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!_options.Enabled)
         {
@@ -58,70 +59,37 @@ internal sealed class SimulationJobWorker : BackgroundService
         }
 
         _logger.LogInformation(
-            "Simulation job worker started. PollingInterval={PollingInterval}, FailureDelay={FailureDelay}",
+            "Simulation job worker started. PollingInterval={PollingInterval}, FailureDelay={FailureDelay}, LeaseDuration={LeaseDuration}, HeartbeatInterval={HeartbeatInterval}, RecoveryInterval={RecoveryInterval}, RecoveryBatchSize={RecoveryBatchSize}",
             _options.PollingInterval,
-            _options.FailureDelay);
+            _options.FailureDelay,
+            _options.LeaseDuration,
+            _options.HeartbeatInterval,
+            _options.RecoveryInterval,
+            _options.RecoveryBatchSize);
 
         try
         {
-            while (!stoppingToken.IsCancellationRequested)
+            using CancellationTokenSource loopsCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            Task processingTask = ProcessingLoopAsync(loopsCancellation.Token);
+            Task recoveryTask = RecoveryLoopAsync(loopsCancellation.Token);
+            Task first = await Task.WhenAny(processingTask, recoveryTask);
+
+            if (!first.IsCompletedSuccessfully)
             {
-                ProcessNextSimulationJobResult? result = null;
-                Exception? iterationFailure = null;
-
-                try
-                {
-                    result = ValidateResult(
-                        await ProcessSingleIterationAsync(stoppingToken));
-                }
-                catch (OperationCanceledException) when (
-                    stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception exception)
-                {
-                    iterationFailure = exception;
-                    _logger.LogError(
-                        exception,
-                        "Simulation job worker iteration failed.");
-                }
-
-                if (iterationFailure is not null)
-                {
-                    if (!await DelayForNextIterationAsync(
-                        _options.FailureDelay,
-                        stoppingToken))
-                    {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if (result is ProcessNextSimulationJobResult.NoWork)
-                {
-                    if (!await DelayForNextIterationAsync(
-                        _options.PollingInterval,
-                        stoppingToken))
-                    {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if (result is ProcessNextSimulationJobResult.Completed completed)
-                {
-                    _logger.LogInformation(
-                        "Simulation job completed. JobId={JobId}, SimulationId={SimulationId}",
-                        completed.JobId,
-                        completed.SimulationId);
-                    continue;
-                }
-
-                throw new UnreachableException();
+                ExceptionDispatchInfo primary = await CaptureFailureAsync(first);
+                loopsCancellation.Cancel();
+                Task sibling = ReferenceEquals(first, processingTask)
+                    ? recoveryTask
+                    : processingTask;
+                await ObserveSecondaryAsync(sibling);
+                primary.Throw();
             }
+
+            await Task.WhenAll(processingTask, recoveryTask);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
         finally
         {
@@ -129,129 +97,245 @@ internal sealed class SimulationJobWorker : BackgroundService
         }
     }
 
+    private async Task ProcessingLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            bool failed = false;
+            SimulationJobClaim? claim = null;
+            try
+            {
+                claim = await ClaimSingleJobAsync(stoppingToken);
+
+                if (claim is not null)
+                {
+                    ProcessClaimedSimulationJobResult result = ValidateResult(
+                        await _leaseSupervisor.ProcessAsync(
+                            claim,
+                            _options.LeaseDuration,
+                            _options.HeartbeatInterval,
+                            stoppingToken));
+
+                    switch (result)
+                    {
+                        case ProcessClaimedSimulationJobResult.Completed completed:
+                            _logger.LogInformation(
+                                "Simulation job completed. JobId={JobId}, SimulationId={SimulationId}",
+                                completed.JobId,
+                                completed.SimulationId);
+                            break;
+                        case ProcessClaimedSimulationJobResult.LeaseLost leaseLost:
+                            _logger.LogWarning(
+                                "Simulation job lease ownership was lost. JobId={JobId}",
+                                leaseLost.JobId);
+                            break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                failed = true;
+                _logger.LogError(
+                    exception,
+                    "Simulation job processing loop iteration failed.");
+            }
+
+            if (failed)
+            {
+                await _delay.DelayAsync(_options.FailureDelay, stoppingToken);
+            }
+            else if (claim is null)
+            {
+                await _delay.DelayAsync(_options.PollingInterval, stoppingToken);
+            }
+        }
+    }
+
+    private async Task RecoveryLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            bool failed = false;
+            try
+            {
+                IReadOnlyList<Guid> recovered =
+                    await RecoverSingleBatchAsync(stoppingToken);
+                if (recovered.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "Expired simulation jobs recovered. RecoveredCount={RecoveredCount}",
+                        recovered.Count);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                failed = true;
+                _logger.LogError(
+                    exception,
+                    "Simulation job recovery loop iteration failed.");
+            }
+
+            await _delay.DelayAsync(
+                failed ? _options.FailureDelay : _options.RecoveryInterval,
+                stoppingToken);
+        }
+    }
+
     private async Task ValidateStartupAsync(CancellationToken cancellationToken)
     {
-        AsyncServiceScope validationScope =
-            _scopeFactory.CreateAsyncScope();
-        ExceptionDispatchInfo? primaryException = null;
-
+        AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+        ExceptionDispatchInfo? primary = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _ = validationScope.ServiceProvider
-                .GetRequiredService<ProcessNextSimulationJobHandler>();
+            IServiceProvider services = scope.ServiceProvider;
+            _ = services.GetRequiredService<ClaimSimulationJobLeaseHandler>();
+            _ = services.GetRequiredService<ProcessClaimedSimulationJobHandler>();
+            _ = services.GetRequiredService<RenewSimulationJobLeaseHandler>();
+            _ = services.GetRequiredService<RecoverExpiredSimulationJobsHandler>();
         }
         catch (Exception exception)
         {
-            primaryException = ExceptionDispatchInfo.Capture(exception);
+            primary = ExceptionDispatchInfo.Capture(exception);
         }
 
-        try
-        {
-            await validationScope.DisposeAsync();
-        }
-        catch (Exception exception)
-        {
-            if (primaryException is null)
-            {
-                primaryException = ExceptionDispatchInfo.Capture(exception);
-            }
-            else
-            {
-                TryLogSecondaryScopeDisposalFailure(exception);
-            }
-        }
-
-        primaryException?.Throw();
+        await DisposeScopeAsync(scope, primary);
+        primary?.Throw();
     }
 
-    internal static ProcessNextSimulationJobResult ValidateResult(
-        ProcessNextSimulationJobResult? result)
-    {
-        return result switch
-        {
-            ProcessNextSimulationJobResult.NoWork => result,
-            ProcessNextSimulationJobResult.Completed => result,
-            null => throw new InvalidOperationException(
-                "Simulation job worker returned a null processing result."),
-            _ => throw new InvalidOperationException(
-                "Simulation job worker returned an unsupported processing result.")
-        };
-    }
-
-    private async Task<ProcessNextSimulationJobResult?>
-        ProcessSingleIterationAsync(
-            CancellationToken stoppingToken)
+    private async Task<SimulationJobClaim?> ClaimSingleJobAsync(
+        CancellationToken stoppingToken)
     {
         AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
-        ExceptionDispatchInfo? primaryException = null;
-        ProcessNextSimulationJobResult? result = null;
-
+        ExceptionDispatchInfo? primary = null;
+        SimulationJobClaim? result = null;
         try
         {
-            ProcessNextSimulationJobHandler handler =
-                scope.ServiceProvider
-                    .GetRequiredService<ProcessNextSimulationJobHandler>();
-
-            result = await handler.HandleAsync(stoppingToken);
+            ClaimSimulationJobLeaseHandler handler = scope.ServiceProvider
+                .GetRequiredService<ClaimSimulationJobLeaseHandler>();
+            result = await handler.HandleAsync(_options.LeaseDuration, stoppingToken);
         }
         catch (Exception exception)
         {
-            primaryException = ExceptionDispatchInfo.Capture(exception);
+            primary = ExceptionDispatchInfo.Capture(exception);
         }
 
+        await DisposeScopeAsync(scope, primary);
+        primary?.Throw();
+        return result;
+    }
+
+    private async Task<IReadOnlyList<Guid>> RecoverSingleBatchAsync(
+        CancellationToken stoppingToken)
+    {
+        AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+        ExceptionDispatchInfo? primary = null;
+        IReadOnlyList<Guid>? result = null;
+        try
+        {
+            RecoverExpiredSimulationJobsHandler handler = scope.ServiceProvider
+                .GetRequiredService<RecoverExpiredSimulationJobsHandler>();
+            result = await handler.HandleAsync(_options.RecoveryBatchSize, stoppingToken);
+        }
+        catch (Exception exception)
+        {
+            primary = ExceptionDispatchInfo.Capture(exception);
+        }
+
+        await DisposeScopeAsync(scope, primary);
+        primary?.Throw();
+        return result ?? throw new InvalidOperationException(
+            "Simulation job recovery returned a null result.");
+    }
+
+    private async Task DisposeScopeAsync(
+        AsyncServiceScope scope,
+        ExceptionDispatchInfo? primary)
+    {
         try
         {
             await scope.DisposeAsync();
         }
         catch (Exception exception)
         {
-            if (primaryException is null)
+            if (primary is null)
             {
-                primaryException = ExceptionDispatchInfo.Capture(exception);
+                ExceptionDispatchInfo.Capture(exception).Throw();
             }
-            else
-            {
-                TryLogSecondaryScopeDisposalFailure(exception);
-            }
-        }
 
-        if (primaryException is not null)
-        {
-            primaryException.Throw();
+            TryLogSecondaryScopeDisposalFailure(exception);
         }
-
-        return result;
     }
 
-    private void TryLogSecondaryScopeDisposalFailure(
-        Exception disposalException)
+    internal static ProcessClaimedSimulationJobResult ValidateResult(
+        ProcessClaimedSimulationJobResult? result) => result switch
+        {
+            ProcessClaimedSimulationJobResult.Completed => result,
+            ProcessClaimedSimulationJobResult.LeaseLost => result,
+            null => throw new InvalidOperationException(
+                "Simulation job worker returned a null processing result."),
+            _ => throw new InvalidOperationException(
+                "Simulation job worker returned an unsupported processing result.")
+        };
+
+    private static async Task<ExceptionDispatchInfo> CaptureFailureAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (Exception exception)
+        {
+            return ExceptionDispatchInfo.Capture(exception);
+        }
+
+        throw new InvalidOperationException(
+            "A simulation job worker loop ended unexpectedly.");
+    }
+
+    private async Task ObserveSecondaryAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Secondary simulation job worker loop failure.");
+            }
+            catch
+            {
+                // Preserve the already captured primary loop failure.
+            }
+        }
+    }
+
+    private void TryLogSecondaryScopeDisposalFailure(Exception exception)
     {
         try
         {
             _logger.LogWarning(
-                disposalException,
+                exception,
                 "Secondary simulation job worker scope disposal failed.");
         }
         catch
         {
             // Preserve the already captured primary exception.
-        }
-    }
-
-    private async Task<bool> DelayForNextIterationAsync(
-        TimeSpan delay,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _delay.DelayAsync(delay, cancellationToken);
-            return true;
-        }
-        catch (OperationCanceledException) when (
-            cancellationToken.IsCancellationRequested)
-        {
-            return false;
         }
     }
 }

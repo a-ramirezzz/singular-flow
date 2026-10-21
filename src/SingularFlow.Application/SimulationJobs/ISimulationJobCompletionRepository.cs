@@ -10,6 +10,7 @@ public interface ISimulationJobCompletionRepository
     /// </summary>
     Task<SimulationJobResult?> SaveSimulationAndCompleteAsync(
         Guid jobId,
+        Guid claimToken,
         RunSimulationResult simulation,
         CancellationToken cancellationToken);
 }

@@ -12,11 +12,13 @@ public sealed class CompleteSimulationJobHandler
 
     public Task<SimulationJobResult?> HandleAsync(
         Guid jobId,
+        Guid claimToken,
         Guid simulationId,
         CancellationToken cancellationToken)
     {
         return _repository.TryCompleteAsync(
             jobId,
+            claimToken,
             simulationId,
             cancellationToken);
     }

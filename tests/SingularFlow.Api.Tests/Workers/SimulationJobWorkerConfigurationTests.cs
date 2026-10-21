@@ -30,6 +30,10 @@ public sealed class SimulationJobWorkerConfigurationTests
         Assert.True(options.Enabled);
         Assert.Equal(TimeSpan.FromSeconds(5), options.PollingInterval);
         Assert.Equal(TimeSpan.FromSeconds(10), options.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(10), options.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.RecoveryInterval);
+        Assert.Equal(100, options.RecoveryBatchSize);
     }
 
     [Fact]
@@ -63,7 +67,13 @@ public sealed class SimulationJobWorkerConfigurationTests
                             new Dictionary<string, string?>
                             {
                                 ["SimulationJobs:Worker:Enabled"] =
-                                    bool.TrueString
+                                    bool.TrueString,
+                                ["SimulationJobs:Worker:PollingInterval"] = "00:00:02",
+                                ["SimulationJobs:Worker:FailureDelay"] = "00:00:03",
+                                ["SimulationJobs:Worker:LeaseDuration"] = "00:00:40",
+                                ["SimulationJobs:Worker:HeartbeatInterval"] = "00:00:08",
+                                ["SimulationJobs:Worker:RecoveryInterval"] = "00:00:12",
+                                ["SimulationJobs:Worker:RecoveryBatchSize"] = "77"
                             });
                     });
 
@@ -71,6 +81,7 @@ public sealed class SimulationJobWorkerConfigurationTests
                 {
                     services.RemoveAll<ISimulationJobRepository>();
                     services.RemoveAll<ISimulationJobCompletionRepository>();
+                    services.RemoveAll<ISimulationJobLeaseRepository>();
                     services.AddSingleton(probe);
                     services.AddScoped<
                         ISimulationJobRepository,
@@ -78,6 +89,9 @@ public sealed class SimulationJobWorkerConfigurationTests
                     services.AddScoped<
                         ISimulationJobCompletionRepository,
                         ControlledSimulationJobCompletionRepository>();
+                    services.AddScoped<
+                        ISimulationJobLeaseRepository,
+                        ControlledSimulationJobLeaseRepository>();
                 });
             });
 
@@ -91,6 +105,10 @@ public sealed class SimulationJobWorkerConfigurationTests
         Assert.False(original.Enabled);
         Assert.Equal(TimeSpan.FromSeconds(5), original.PollingInterval);
         Assert.Equal(TimeSpan.FromSeconds(10), original.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), original.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(10), original.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(30), original.RecoveryInterval);
+        Assert.Equal(100, original.RecoveryBatchSize);
 
         SimulationJobWorkerOptions clone = ResolveOptions(enabledFactory);
 
@@ -100,9 +118,20 @@ public sealed class SimulationJobWorkerConfigurationTests
                 .GetRequiredService<IHostEnvironment>()
                 .EnvironmentName);
         Assert.True(clone.Enabled);
-        Assert.Equal(TimeSpan.FromSeconds(5), clone.PollingInterval);
-        Assert.Equal(TimeSpan.FromSeconds(10), clone.FailureDelay);
-        Assert.False(ResolveOptions(factory).Enabled);
+        Assert.Equal(TimeSpan.FromSeconds(2), clone.PollingInterval);
+        Assert.Equal(TimeSpan.FromSeconds(3), clone.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(40), clone.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(8), clone.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(12), clone.RecoveryInterval);
+        Assert.Equal(77, clone.RecoveryBatchSize);
+        SimulationJobWorkerOptions unchanged = ResolveOptions(factory);
+        Assert.False(unchanged.Enabled);
+        Assert.Equal(TimeSpan.FromSeconds(5), unchanged.PollingInterval);
+        Assert.Equal(TimeSpan.FromSeconds(10), unchanged.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), unchanged.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(10), unchanged.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(30), unchanged.RecoveryInterval);
+        Assert.Equal(100, unchanged.RecoveryBatchSize);
     }
 
     [Theory]
@@ -112,6 +141,15 @@ public sealed class SimulationJobWorkerConfigurationTests
     [InlineData("FailureDelay", "00:00:00", "SimulationJobs:Worker:FailureDelay must be greater than 00:00:00.")]
     [InlineData("FailureDelay", "-00:00:01", "SimulationJobs:Worker:FailureDelay must be greater than 00:00:00.")]
     [InlineData("FailureDelay", "00:05:01", "SimulationJobs:Worker:FailureDelay must not exceed 00:05:00.")]
+    [InlineData("LeaseDuration", "00:00:00", "SimulationJobs:Worker:LeaseDuration must be greater than 00:00:00.")]
+    [InlineData("LeaseDuration", "00:05:01", "SimulationJobs:Worker:LeaseDuration must not exceed 00:05:00.")]
+    [InlineData("HeartbeatInterval", "00:00:00", "SimulationJobs:Worker:HeartbeatInterval must be greater than 00:00:00.")]
+    [InlineData("HeartbeatInterval", "00:00:30", "SimulationJobs:Worker:HeartbeatInterval must be less than LeaseDuration.")]
+    [InlineData("HeartbeatInterval", "00:00:31", "SimulationJobs:Worker:HeartbeatInterval must be less than LeaseDuration.")]
+    [InlineData("RecoveryInterval", "00:00:00", "SimulationJobs:Worker:RecoveryInterval must be greater than 00:00:00.")]
+    [InlineData("RecoveryInterval", "00:05:01", "SimulationJobs:Worker:RecoveryInterval must not exceed 00:05:00.")]
+    [InlineData("RecoveryBatchSize", "0", "SimulationJobs:Worker:RecoveryBatchSize must be at least 1.")]
+    [InlineData("RecoveryBatchSize", "1001", "SimulationJobs:Worker:RecoveryBatchSize must not exceed 1000.")]
     public void InvalidDuration_FailsValidationWhileDisabled(
         string optionName,
         string value,
@@ -180,6 +218,10 @@ public sealed class SimulationJobWorkerConfigurationTests
         Assert.False(options.Enabled);
         Assert.Equal(TimeSpan.FromSeconds(5), options.PollingInterval);
         Assert.Equal(TimeSpan.FromSeconds(10), options.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(10), options.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.RecoveryInterval);
+        Assert.Equal(100, options.RecoveryBatchSize);
     }
 
     [Fact]
@@ -195,6 +237,10 @@ public sealed class SimulationJobWorkerConfigurationTests
         Assert.True(options.Enabled);
         Assert.Equal(TimeSpan.FromSeconds(5), options.PollingInterval);
         Assert.Equal(TimeSpan.FromSeconds(10), options.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(10), options.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.RecoveryInterval);
+        Assert.Equal(100, options.RecoveryBatchSize);
     }
 
     private static SimulationJobWorkerOptions ResolveOptions(

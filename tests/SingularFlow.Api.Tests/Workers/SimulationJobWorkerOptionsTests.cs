@@ -20,5 +20,9 @@ public sealed class SimulationJobWorkerOptionsTests
         Assert.True(options.Enabled);
         Assert.Equal(TimeSpan.FromSeconds(5), options.PollingInterval);
         Assert.Equal(TimeSpan.FromSeconds(10), options.FailureDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.LeaseDuration);
+        Assert.Equal(TimeSpan.FromSeconds(10), options.HeartbeatInterval);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.RecoveryInterval);
+        Assert.Equal(100, options.RecoveryBatchSize);
     }
 }
