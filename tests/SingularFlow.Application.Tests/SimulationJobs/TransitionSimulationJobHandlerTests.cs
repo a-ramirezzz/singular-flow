@@ -13,8 +13,12 @@ public sealed class TransitionSimulationJobHandlerTests
         Guid.Parse(
             "c5a427fe-e948-4f0d-86a5-4c5a93f819b0");
 
+    private static readonly Guid ClaimToken =
+        Guid.Parse(
+            "013fa095-9aac-46ad-b335-1b46f092a91f");
+
     [Fact]
-    public async Task CompleteHandler_RepositoryResult_DelegatesAndReturnsExactResult()
+    public async Task CompleteHandler_ClaimToken_DelegatesAndReturnsExactResult()
     {
         SimulationJobResult repositoryResult = CreateResult(
             SimulationJobStatus.Completed);
@@ -25,11 +29,13 @@ public sealed class TransitionSimulationJobHandlerTests
 
         SimulationJobResult? result = await handler.HandleAsync(
             JobId,
+            ClaimToken,
             SimulationId,
             cancellation.Token);
 
-        Assert.Equal(1, repository.CompletionInvocationCount);
+        Assert.Equal(1, repository.FencedCompletionInvocationCount);
         Assert.Equal(JobId, repository.ReceivedJobId);
+        Assert.Equal(ClaimToken, repository.ReceivedClaimToken);
         Assert.Equal(SimulationId, repository.ReceivedSimulationId);
         Assert.Equal(
             cancellation.Token,
@@ -38,25 +44,25 @@ public sealed class TransitionSimulationJobHandlerTests
     }
 
     [Fact]
-    public async Task CompleteHandler_NoTransition_PropagatesNull()
+    public async Task CompleteHandler_ClaimToken_NoTransition_PropagatesNull()
     {
         RecordingSimulationJobRepository repository = new(null);
         CompleteSimulationJobHandler handler = new(repository);
 
         SimulationJobResult? result = await handler.HandleAsync(
             JobId,
+            ClaimToken,
             SimulationId,
             CancellationToken.None);
 
-        Assert.Equal(1, repository.CompletionInvocationCount);
+        Assert.Equal(1, repository.FencedCompletionInvocationCount);
         Assert.Null(result);
     }
 
     [Fact]
-    public async Task FailHandler_RepositoryResult_DelegatesAndReturnsExactResult()
+    public async Task FailHandler_ClaimToken_DelegatesAndReturnsExactResult()
     {
-        const string failureMessage =
-            "The simulation could not be calculated.";
+        const string failureMessage = "  Exact failure description.  ";
         SimulationJobResult repositoryResult = CreateResult(
             SimulationJobStatus.Failed);
         RecordingSimulationJobRepository repository = new(
@@ -66,11 +72,13 @@ public sealed class TransitionSimulationJobHandlerTests
 
         SimulationJobResult? result = await handler.HandleAsync(
             JobId,
+            ClaimToken,
             failureMessage,
             cancellation.Token);
 
-        Assert.Equal(1, repository.FailureInvocationCount);
+        Assert.Equal(1, repository.FencedFailureInvocationCount);
         Assert.Equal(JobId, repository.ReceivedJobId);
+        Assert.Equal(ClaimToken, repository.ReceivedClaimToken);
         Assert.Equal(failureMessage, repository.ReceivedFailureMessage);
         Assert.Equal(
             cancellation.Token,
@@ -79,24 +87,25 @@ public sealed class TransitionSimulationJobHandlerTests
     }
 
     [Fact]
-    public async Task FailHandler_NoTransition_PropagatesNull()
+    public async Task FailHandler_ClaimToken_NoTransition_PropagatesNull()
     {
         RecordingSimulationJobRepository repository = new(null);
         FailSimulationJobHandler handler = new(repository);
 
         SimulationJobResult? result = await handler.HandleAsync(
             JobId,
+            ClaimToken,
             "Failure",
             CancellationToken.None);
 
-        Assert.Equal(1, repository.FailureInvocationCount);
+        Assert.Equal(1, repository.FencedFailureInvocationCount);
         Assert.Null(result);
     }
 
     [Theory]
     [InlineData("")]
     [InlineData(" \t\r\n")]
-    public async Task FailHandler_InvalidMessage_ThrowsAndDoesNotCallRepository(
+    public async Task FailHandler_ClaimToken_InvalidMessage_ThrowsBeforeRepository(
         string failureMessage)
     {
         RecordingSimulationJobRepository repository = new(null);
@@ -106,15 +115,16 @@ public sealed class TransitionSimulationJobHandlerTests
             await Assert.ThrowsAsync<ArgumentException>(
                 () => handler.HandleAsync(
                     JobId,
+                    ClaimToken,
                     failureMessage,
                     CancellationToken.None));
 
         Assert.Equal("failureMessage", exception.ParamName);
-        Assert.Equal(0, repository.FailureInvocationCount);
+        Assert.Equal(0, repository.FencedFailureInvocationCount);
     }
 
     [Fact]
-    public async Task FailHandler_NullMessage_ThrowsAndDoesNotCallRepository()
+    public async Task FailHandler_ClaimToken_NullMessage_ThrowsBeforeRepository()
     {
         RecordingSimulationJobRepository repository = new(null);
         FailSimulationJobHandler handler = new(repository);
@@ -123,15 +133,16 @@ public sealed class TransitionSimulationJobHandlerTests
             await Assert.ThrowsAsync<ArgumentNullException>(
                 () => handler.HandleAsync(
                     JobId,
+                    ClaimToken,
                     null!,
                     CancellationToken.None));
 
         Assert.Equal("failureMessage", exception.ParamName);
-        Assert.Equal(0, repository.FailureInvocationCount);
+        Assert.Equal(0, repository.FencedFailureInvocationCount);
     }
 
     [Fact]
-    public async Task FailHandler_MessageOverMaximumLength_ThrowsAndDoesNotCallRepository()
+    public async Task FailHandler_ClaimToken_OverMaximum_ThrowsBeforeRepository()
     {
         RecordingSimulationJobRepository repository = new(null);
         FailSimulationJobHandler handler = new(repository);
@@ -140,11 +151,12 @@ public sealed class TransitionSimulationJobHandlerTests
             await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
                 () => handler.HandleAsync(
                     JobId,
+                    ClaimToken,
                     new string('x', 1001),
                     CancellationToken.None));
 
         Assert.Equal("failureMessage", exception.ParamName);
-        Assert.Equal(0, repository.FailureInvocationCount);
+        Assert.Equal(0, repository.FencedFailureInvocationCount);
     }
 
     private static SimulationJobResult CreateResult(
@@ -187,13 +199,15 @@ public sealed class TransitionSimulationJobHandlerTests
             _result = result;
         }
 
-        public int CompletionInvocationCount { get; private set; }
+        public int FencedCompletionInvocationCount { get; private set; }
 
-        public int FailureInvocationCount { get; private set; }
+        public int FencedFailureInvocationCount { get; private set; }
 
         public Guid ReceivedJobId { get; private set; }
 
         public Guid ReceivedSimulationId { get; private set; }
+
+        public Guid ReceivedClaimToken { get; private set; }
 
         public string? ReceivedFailureMessage { get; private set; }
 
@@ -211,11 +225,13 @@ public sealed class TransitionSimulationJobHandlerTests
 
         public Task<SimulationJobResult?> TryCompleteAsync(
             Guid jobId,
+            Guid claimToken,
             Guid simulationId,
             CancellationToken cancellationToken)
         {
-            CompletionInvocationCount++;
+            FencedCompletionInvocationCount++;
             ReceivedJobId = jobId;
+            ReceivedClaimToken = claimToken;
             ReceivedSimulationId = simulationId;
             ReceivedCompletionCancellationToken = cancellationToken;
 
@@ -224,20 +240,18 @@ public sealed class TransitionSimulationJobHandlerTests
 
         public Task<SimulationJobResult?> TryFailAsync(
             Guid jobId,
+            Guid claimToken,
             string failureMessage,
             CancellationToken cancellationToken)
         {
-            FailureInvocationCount++;
+            FencedFailureInvocationCount++;
             ReceivedJobId = jobId;
+            ReceivedClaimToken = claimToken;
             ReceivedFailureMessage = failureMessage;
             ReceivedFailureCancellationToken = cancellationToken;
 
             return Task.FromResult(_result);
         }
-
-        public Task<SimulationJobResult?> ClaimNextPendingAsync(
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
 
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,

@@ -12,19 +12,26 @@ public sealed class SimulationJobTerminalConfigurationTests
 {
     private const string LifecycleConstraint =
         "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL " +
+        "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
         "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
         "AND \"failure_message\" IS NULL) OR " +
         "(\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL " +
+        "AND \"claim_token\" IS NOT NULL " +
+        "AND \"lease_expires_at_utc\" IS NOT NULL " +
+        "AND \"lease_expires_at_utc\" > \"claimed_at_utc\" " +
         "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
         "AND \"failure_message\" IS NULL) OR " +
         "(\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL " +
+        "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
         "AND \"finished_at_utc\" IS NOT NULL " +
         "AND \"failure_message\" IS NULL) OR " +
         "(\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL " +
+        "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
         "AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL " +
         "AND \"failure_message\" IS NOT NULL " +
         "AND \"failure_message\" ~ '[^[:space:]]') OR " +
-        "(\"status\" = 'Cancelled' AND \"finished_at_utc\" IS NULL " +
+        "(\"status\" = 'Cancelled' AND \"claim_token\" IS NULL " +
+        "AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL " +
         "AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)";
 
     [Fact]

@@ -125,16 +125,9 @@ public sealed class SimulationJobEndpointFactory :
             return Task.FromResult(result);
         }
 
-        public Task<SimulationJobResult?> ClaimNextPendingAsync(
-            CancellationToken cancellationToken)
-        {
-            ClaimCount++;
-            throw new InvalidOperationException(
-                "Endpoint tests must not claim jobs.");
-        }
-
         public Task<SimulationJobResult?> TryCompleteAsync(
             Guid jobId,
+            Guid claimToken,
             Guid simulationId,
             CancellationToken cancellationToken)
         {
@@ -145,6 +138,7 @@ public sealed class SimulationJobEndpointFactory :
 
         public Task<SimulationJobResult?> TryFailAsync(
             Guid jobId,
+            Guid claimToken,
             string failureMessage,
             CancellationToken cancellationToken)
         {

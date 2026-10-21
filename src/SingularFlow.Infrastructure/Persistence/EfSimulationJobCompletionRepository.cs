@@ -26,6 +26,7 @@ public sealed class EfSimulationJobCompletionRepository :
 
     public async Task<SimulationJobResult?> SaveSimulationAndCompleteAsync(
         Guid jobId,
+        Guid claimToken,
         RunSimulationResult simulation,
         CancellationToken cancellationToken)
     {
@@ -91,12 +92,13 @@ public sealed class EfSimulationJobCompletionRepository :
                     simulation,
                     cancellationToken);
 
-            completedJob =
-                await new EfSimulationJobRepository(_context)
-                    .TryCompleteAsync(
-                        jobId,
-                        persistedSimulation.Id,
-                        cancellationToken);
+            EfSimulationJobRepository jobs =
+                new(_context);
+            completedJob = await jobs.TryCompleteAsync(
+                jobId,
+                claimToken,
+                persistedSimulation.Id,
+                cancellationToken);
 
             if (completedJob is null)
             {

@@ -88,6 +88,10 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("ClaimToken")
+                        .HasColumnType("uuid")
+                        .HasColumnName("claim_token");
+
                     b.Property<DateTimeOffset?>("ClaimedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("claimed_at_utc");
@@ -114,6 +118,10 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("FinishedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("finished_at_utc");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lease_expires_at_utc");
 
                     b.Property<int>("SampleCount")
                         .HasColumnType("integer")
@@ -152,13 +160,16 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                     b.HasIndex("Status", "CreatedAtUtc", "Id")
                         .HasDatabaseName("ix_simulation_jobs_status_created_at_utc_id");
 
+                    b.HasIndex("Status", "LeaseExpiresAtUtc", "Id")
+                        .HasDatabaseName("ix_simulation_jobs_status_lease_expires_at_utc_id");
+
                     b.ToTable("simulation_jobs", null, t =>
                         {
                             t.HasCheckConstraint("ck_simulation_jobs_concentration_exponent", "\"concentration_exponent\" > 0 AND \"concentration_exponent\" < 0.01");
 
                             t.HasCheckConstraint("ck_simulation_jobs_end_time", "\"end_time\" > \"start_time\"");
 
-                            t.HasCheckConstraint("ck_simulation_jobs_lifecycle", "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL AND \"finished_at_utc\" IS NOT NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NOT NULL AND \"failure_message\" ~ '[^[:space:]]') OR (\"status\" = 'Cancelled' AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)");
+                            t.HasCheckConstraint("ck_simulation_jobs_lifecycle", "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NOT NULL AND \"lease_expires_at_utc\" IS NOT NULL AND \"lease_expires_at_utc\" > \"claimed_at_utc\" AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NOT NULL AND \"failure_message\" ~ '[^[:space:]]') OR (\"status\" = 'Cancelled' AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)");
 
                             t.HasCheckConstraint("ck_simulation_jobs_sample_count", "\"sample_count\" >= 2 AND \"sample_count\" <= 100000");
 

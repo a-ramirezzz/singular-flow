@@ -2,7 +2,7 @@ using SingularFlow.Application.Simulations;
 
 namespace SingularFlow.Application.SimulationJobs;
 
-public sealed class ProcessNextSimulationJobHandler
+public sealed class ProcessClaimedSimulationJobHandler
 {
     private const string ExecutionFailureMessage =
         "Simulation execution failed.";
@@ -12,98 +12,88 @@ public sealed class ProcessNextSimulationJobHandler
 
     private const string FailureTransitionDiagnosticKey =
         "SingularFlow.Application.SimulationJobs." +
-        "ProcessNextSimulationJobHandler.FailureTransition";
+        "ProcessClaimedSimulationJobHandler.FailureTransition";
 
-    private readonly ClaimSimulationJobHandler _claimHandler;
-    private readonly RunSimulationHandler _simulationHandler;
+    private readonly RunSimulationHandler _runSimulationHandler;
     private readonly ISimulationJobCompletionRepository
         _completionRepository;
     private readonly FailSimulationJobHandler _failHandler;
 
-    public ProcessNextSimulationJobHandler(
-        ClaimSimulationJobHandler claimHandler,
-        RunSimulationHandler simulationHandler,
+    public ProcessClaimedSimulationJobHandler(
+        RunSimulationHandler runSimulationHandler,
         ISimulationJobCompletionRepository completionRepository,
         FailSimulationJobHandler failHandler)
     {
-        _claimHandler = claimHandler;
-        _simulationHandler = simulationHandler;
+        _runSimulationHandler = runSimulationHandler;
         _completionRepository = completionRepository;
         _failHandler = failHandler;
     }
 
-    public async Task<ProcessNextSimulationJobResult> HandleAsync(
+    public async Task<ProcessClaimedSimulationJobResult> HandleAsync(
+        SimulationJobClaim claim,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(claim);
+        claim.Validate();
 
-        SimulationJobResult? claimedJob =
-            await _claimHandler.HandleAsync(cancellationToken);
-
-        if (claimedJob is null)
-        {
-            return new ProcessNextSimulationJobResult.NoWork();
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        ValidateClaimedJob(claimedJob);
-
-        RunSimulationResult simulation;
+        RunSimulationResult simulationResult;
 
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            simulation = _simulationHandler.Handle(
-                claimedJob.Request);
+            simulationResult = _runSimulationHandler.Handle(
+                claim.Job.Request);
             cancellationToken.ThrowIfCancellationRequested();
         }
         catch (Exception exception) when (
             exception is not OperationCanceledException)
         {
             await TryMarkFailedAsync(
-                claimedJob.Id,
+                claim,
                 ExecutionFailureMessage,
                 cancellationToken,
                 exception);
             throw;
         }
 
-        SimulationJobResult? terminalJob;
+        SimulationJobResult? completedJob;
 
         try
         {
-            terminalJob =
+            completedJob =
                 await _completionRepository.SaveSimulationAndCompleteAsync(
-                    claimedJob.Id,
-                    simulation,
+                    claim.Job.Id,
+                    claim.ClaimToken,
+                    simulationResult,
                     cancellationToken);
         }
         catch (Exception exception) when (
             exception is not OperationCanceledException)
         {
             await TryMarkFailedAsync(
-                claimedJob.Id,
+                claim,
                 FinalizationFailureMessage,
                 cancellationToken,
                 exception);
             throw;
         }
 
-        if (terminalJob is null)
+        if (completedJob is null)
         {
-            throw new InvalidOperationException(
-                "Atomic completion was rejected for the claimed job.");
+            return new ProcessClaimedSimulationJobResult.LeaseLost(
+                claim.Job.Id);
         }
 
-        ValidateCompletedJob(claimedJob.Id, terminalJob);
+        ValidateCompletedJob(claim.Job.Id, completedJob);
 
-        return new ProcessNextSimulationJobResult.Completed(
-            terminalJob.Id,
-            terminalJob.SimulationId!.Value);
+        return new ProcessClaimedSimulationJobResult.Completed(
+            completedJob.Id,
+            completedJob.SimulationId!.Value);
     }
 
     private async Task TryMarkFailedAsync(
-        Guid jobId,
+        SimulationJobClaim claim,
         string failureMessage,
         CancellationToken cancellationToken,
         Exception originalException)
@@ -112,7 +102,8 @@ public sealed class ProcessNextSimulationJobHandler
         {
             SimulationJobResult? failedJob =
                 await _failHandler.HandleAsync(
-                    jobId,
+                    claim.Job.Id,
+                    claim.ClaimToken,
                     failureMessage,
                     cancellationToken);
 
@@ -131,85 +122,45 @@ public sealed class ProcessNextSimulationJobHandler
         }
     }
 
-    private static void ValidateClaimedJob(
-        SimulationJobResult claimedJob)
-    {
-        if (claimedJob.Id == Guid.Empty)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job has an empty ID.");
-        }
-
-        if (claimedJob.Status != SimulationJobStatus.Running)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job is not Running.");
-        }
-
-        if (claimedJob.ClaimedAtUtc is null)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job has no claim timestamp.");
-        }
-
-        if (claimedJob.SimulationId is not null)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job already has a simulation ID.");
-        }
-
-        if (claimedJob.FinishedAtUtc is not null)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job already has a finish timestamp.");
-        }
-
-        if (claimedJob.FailureMessage is not null)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job already has a failure message.");
-        }
-
-        if (claimedJob.Request is null)
-        {
-            throw new InvalidOperationException(
-                "Claimed simulation job has no simulation request.");
-        }
-    }
-
     private static void ValidateCompletedJob(
         Guid claimedJobId,
-        SimulationJobResult terminalJob)
+        SimulationJobResult completedJob)
     {
-        if (terminalJob.Id != claimedJobId)
+        if (completedJob.Id != claimedJobId)
         {
             throw new InvalidOperationException(
                 "Completed simulation job ID does not match the claim.");
         }
 
-        if (terminalJob.Status != SimulationJobStatus.Completed)
+        if (completedJob.Status != SimulationJobStatus.Completed)
         {
             throw new InvalidOperationException(
                 "Atomic completion returned a job that is not Completed.");
         }
 
-        if (terminalJob.SimulationId is null ||
-            terminalJob.SimulationId == Guid.Empty)
+        if (completedJob.SimulationId is null ||
+            completedJob.SimulationId == Guid.Empty)
         {
             throw new InvalidOperationException(
                 "Completed simulation job has no valid simulation ID.");
         }
 
-        if (terminalJob.FinishedAtUtc is null)
+        if (completedJob.FinishedAtUtc is null)
         {
             throw new InvalidOperationException(
                 "Completed simulation job has no finish timestamp.");
         }
 
-        if (terminalJob.FailureMessage is not null)
+        if (completedJob.FailureMessage is not null)
         {
             throw new InvalidOperationException(
                 "Completed simulation job has a failure message.");
+        }
+
+        if (completedJob.ClaimedAtUtc is null)
+        {
+            throw new InvalidOperationException(
+                "Completed simulation job has no claim timestamp.");
         }
     }
 }

@@ -26,6 +26,10 @@ public sealed class SimulationJobEntity
 
     public DateTimeOffset? ClaimedAtUtc { get; set; }
 
+    public Guid? ClaimToken { get; set; }
+
+    public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
+
     public Guid? SimulationId { get; set; }
 
     public DateTimeOffset? FinishedAtUtc { get; set; }

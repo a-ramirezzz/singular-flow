@@ -15,6 +15,8 @@ internal sealed class SimulationJobProcessingProbe
 
     public int CompletionCount { get; private set; }
 
+    public int RecoveryCount { get; private set; }
+
     public void RecordClaim(CancellationToken cancellationToken)
     {
         ClaimCount++;
@@ -31,12 +33,52 @@ internal sealed class SimulationJobProcessingProbe
         CompletionCount++;
     }
 
+    public void RecordRecovery()
+    {
+        RecoveryCount++;
+    }
+
     public async Task<CancellationToken> WaitForClaimAsync()
     {
         using CancellationTokenSource safetyCancellation =
             new(SafetyTimeout);
         return await _claimObserved.Task.WaitAsync(
             safetyCancellation.Token);
+    }
+}
+
+internal sealed class ControlledSimulationJobLeaseRepository :
+    ISimulationJobLeaseRepository
+{
+    private readonly SimulationJobProcessingProbe _probe;
+
+    public ControlledSimulationJobLeaseRepository(
+        SimulationJobProcessingProbe probe)
+    {
+        _probe = probe;
+    }
+
+    public Task<SimulationJobClaim?> ClaimNextPendingAsync(
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        _probe.RecordClaim(cancellationToken);
+        return Task.FromResult<SimulationJobClaim?>(null);
+    }
+
+    public Task<DateTimeOffset?> TryRenewLeaseAsync(
+        Guid jobId,
+        Guid claimToken,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public Task<IReadOnlyList<Guid>> RecoverExpiredAsync(
+        int batchSize,
+        CancellationToken cancellationToken)
+    {
+        _probe.RecordRecovery();
+        return Task.FromResult<IReadOnlyList<Guid>>([]);
     }
 }
 
@@ -49,13 +91,6 @@ internal sealed class ControlledSimulationJobRepository :
         SimulationJobProcessingProbe probe)
     {
         _probe = probe;
-    }
-
-    public Task<SimulationJobResult?> ClaimNextPendingAsync(
-        CancellationToken cancellationToken)
-    {
-        _probe.RecordClaim(cancellationToken);
-        return Task.FromResult<SimulationJobResult?>(null);
     }
 
     public Task<SimulationJobResult> CreateAsync(
@@ -74,6 +109,7 @@ internal sealed class ControlledSimulationJobRepository :
 
     public Task<SimulationJobResult?> TryCompleteAsync(
         Guid jobId,
+        Guid claimToken,
         Guid simulationId,
         CancellationToken cancellationToken)
     {
@@ -82,6 +118,7 @@ internal sealed class ControlledSimulationJobRepository :
 
     public Task<SimulationJobResult?> TryFailAsync(
         Guid jobId,
+        Guid claimToken,
         string failureMessage,
         CancellationToken cancellationToken)
     {
@@ -104,6 +141,7 @@ internal sealed class ControlledSimulationJobCompletionRepository :
 
     public Task<SimulationJobResult?> SaveSimulationAndCompleteAsync(
         Guid jobId,
+        Guid claimToken,
         RunSimulationResult simulation,
         CancellationToken cancellationToken)
     {

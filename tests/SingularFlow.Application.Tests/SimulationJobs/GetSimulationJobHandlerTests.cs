@@ -112,18 +112,16 @@ public sealed class GetSimulationJobHandlerTests
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<SimulationJobResult?> ClaimNextPendingAsync(
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
         public Task<SimulationJobResult?> TryCompleteAsync(
             Guid jobId,
+            Guid claimToken,
             Guid simulationId,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<SimulationJobResult?> TryFailAsync(
             Guid jobId,
+            Guid claimToken,
             string failureMessage,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();

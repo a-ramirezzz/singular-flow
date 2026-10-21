@@ -12,8 +12,21 @@ public sealed class FailSimulationJobHandler
 
     public Task<SimulationJobResult?> HandleAsync(
         Guid jobId,
+        Guid claimToken,
         string failureMessage,
         CancellationToken cancellationToken)
+    {
+        ValidateFailureMessage(failureMessage);
+
+        return _repository.TryFailAsync(
+            jobId,
+            claimToken,
+            failureMessage,
+            cancellationToken);
+    }
+
+    private static void ValidateFailureMessage(
+        string failureMessage)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(
             failureMessage);
@@ -27,10 +40,5 @@ public sealed class FailSimulationJobHandler
                 $"{SimulationJobResult.MaximumFailureMessageLength} " +
                 "characters.");
         }
-
-        return _repository.TryFailAsync(
-            jobId,
-            failureMessage,
-            cancellationToken);
     }
 }
