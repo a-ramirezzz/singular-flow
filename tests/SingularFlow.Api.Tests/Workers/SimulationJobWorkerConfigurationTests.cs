@@ -22,10 +22,14 @@ public sealed class SimulationJobWorkerConfigurationTests
             .AddJsonFile("appsettings.json")
             .Build();
         SimulationJobWorkerOptions options = new();
+        SimulationJobRetryOptions retryOptions = new();
 
         configuration
             .GetSection(SimulationJobWorkerOptions.SectionName)
             .Bind(options);
+        configuration
+            .GetSection(SimulationJobRetryOptions.SectionName)
+            .Bind(retryOptions);
 
         Assert.True(options.Enabled);
         Assert.Equal(TimeSpan.FromSeconds(5), options.PollingInterval);
@@ -34,6 +38,9 @@ public sealed class SimulationJobWorkerConfigurationTests
         Assert.Equal(TimeSpan.FromSeconds(10), options.HeartbeatInterval);
         Assert.Equal(TimeSpan.FromSeconds(30), options.RecoveryInterval);
         Assert.Equal(100, options.RecoveryBatchSize);
+        Assert.Equal(3, retryOptions.MaxAttempts);
+        Assert.Equal(TimeSpan.FromSeconds(5), retryOptions.BaseDelay);
+        Assert.Equal(TimeSpan.FromMinutes(5), retryOptions.MaximumDelay);
     }
 
     [Fact]
@@ -82,6 +89,7 @@ public sealed class SimulationJobWorkerConfigurationTests
                     services.RemoveAll<ISimulationJobRepository>();
                     services.RemoveAll<ISimulationJobCompletionRepository>();
                     services.RemoveAll<ISimulationJobLeaseRepository>();
+                    services.RemoveAll<ISimulationJobRetryRepository>();
                     services.AddSingleton(probe);
                     services.AddScoped<
                         ISimulationJobRepository,
@@ -92,6 +100,9 @@ public sealed class SimulationJobWorkerConfigurationTests
                     services.AddScoped<
                         ISimulationJobLeaseRepository,
                         ControlledSimulationJobLeaseRepository>();
+                    services.AddScoped<
+                        ISimulationJobRetryRepository,
+                        ControlledSimulationJobRetryRepository>();
                 });
             });
 

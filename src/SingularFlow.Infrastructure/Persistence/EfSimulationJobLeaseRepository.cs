@@ -5,6 +5,10 @@ using System.Runtime.ExceptionServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
+using Npgsql;
+
+using NpgsqlTypes;
+
 using SingularFlow.Application.SimulationJobs;
 using SingularFlow.Application.Simulations;
 
@@ -20,7 +24,10 @@ public sealed class EfSimulationJobLeaseRepository :
             SELECT id
             FROM simulation_jobs
             WHERE status = @pending_status
-            ORDER BY created_at_utc ASC, id ASC
+              AND next_attempt_at_utc IS NOT NULL
+              AND next_attempt_at_utc <= CURRENT_TIMESTAMP
+              AND attempt_count < max_attempts
+            ORDER BY next_attempt_at_utc ASC, created_at_utc ASC, id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
@@ -29,7 +36,9 @@ public sealed class EfSimulationJobLeaseRepository :
             status = @running_status,
             claimed_at_utc = CURRENT_TIMESTAMP,
             claim_token = gen_random_uuid(),
-            lease_expires_at_utc = CURRENT_TIMESTAMP + @lease_duration
+            lease_expires_at_utc = CURRENT_TIMESTAMP + @lease_duration,
+            attempt_count = attempt_count + 1,
+            next_attempt_at_utc = NULL
         FROM next_job
         WHERE job.id = next_job.id
         RETURNING
@@ -46,6 +55,11 @@ public sealed class EfSimulationJobLeaseRepository :
             job.simulation_id,
             job.finished_at_utc,
             job.failure_message,
+            job.attempt_count,
+            job.max_attempts,
+            job.next_attempt_at_utc,
+            job.last_failed_at_utc,
+            job.last_failure_message,
             job.claim_token,
             job.lease_expires_at_utc;
         """;
@@ -65,10 +79,10 @@ public sealed class EfSimulationJobLeaseRepository :
         """
         WITH expired AS
         (
-            SELECT id, lease_expires_at_utc
+            SELECT id, lease_expires_at_utc, attempt_count, max_attempts
             FROM simulation_jobs
             WHERE status = @running_status
-              AND lease_expires_at_utc < CURRENT_TIMESTAMP
+              AND lease_expires_at_utc <= CURRENT_TIMESTAMP
             ORDER BY lease_expires_at_utc ASC, id ASC
             FOR UPDATE SKIP LOCKED
             LIMIT @batch_size
@@ -77,10 +91,38 @@ public sealed class EfSimulationJobLeaseRepository :
         (
             UPDATE simulation_jobs AS job
             SET
-                status = @pending_status,
-                claimed_at_utc = NULL,
+                status = CASE
+                    WHEN job.attempt_count < job.max_attempts
+                        THEN @pending_status
+                    ELSE @failed_status
+                END,
+                claimed_at_utc = CASE
+                    WHEN job.attempt_count < job.max_attempts
+                        THEN NULL
+                    ELSE job.claimed_at_utc
+                END,
                 claim_token = NULL,
-                lease_expires_at_utc = NULL
+                lease_expires_at_utc = NULL,
+                next_attempt_at_utc = CASE
+                    WHEN job.attempt_count < job.max_attempts THEN
+                        CURRENT_TIMESTAMP + LEAST(
+                            @maximum_delay,
+                            @base_delay * power(2::numeric, job.attempt_count - 1)::double precision)
+                    ELSE NULL
+                END,
+                finished_at_utc = CASE
+                    WHEN job.attempt_count < job.max_attempts
+                        THEN NULL
+                    ELSE CURRENT_TIMESTAMP
+                END,
+                simulation_id = NULL,
+                failure_message = CASE
+                    WHEN job.attempt_count < job.max_attempts
+                        THEN NULL
+                    ELSE @recovery_message
+                END,
+                last_failed_at_utc = CURRENT_TIMESTAMP,
+                last_failure_message = @recovery_message
             FROM expired
             WHERE job.id = expired.id
             RETURNING job.id
@@ -92,12 +134,19 @@ public sealed class EfSimulationJobLeaseRepository :
         """;
 
     private readonly SingularFlowDbContext _context;
+    private readonly SimulationJobRetryPolicy _retryPolicy;
+
+    private const string RecoveryFailureMessage =
+        "Simulation job lease expired before completion.";
 
     public EfSimulationJobLeaseRepository(
-        SingularFlowDbContext context)
+        SingularFlowDbContext context,
+        SimulationJobRetryPolicy retryPolicy)
     {
         ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(retryPolicy);
         _context = context;
+        _retryPolicy = retryPolicy;
     }
 
     public Task<SimulationJobClaim?> ClaimNextPendingAsync(
@@ -184,6 +233,10 @@ public sealed class EfSimulationJobLeaseRepository :
             {
                 AddStringParameter(command, "running_status", nameof(SimulationJobStatus.Running));
                 AddStringParameter(command, "pending_status", nameof(SimulationJobStatus.Pending));
+                AddStringParameter(command, "failed_status", nameof(SimulationJobStatus.Failed));
+                AddStringParameter(command, "recovery_message", RecoveryFailureMessage);
+                AddIntervalParameter(command, "base_delay", _retryPolicy.BaseDelay);
+                AddIntervalParameter(command, "maximum_delay", _retryPolicy.MaximumDelay);
                 AddParameter(command, "batch_size", DbType.Int32, batchSize);
             },
             async reader =>
@@ -287,10 +340,10 @@ public sealed class EfSimulationJobLeaseRepository :
         DateTimeOffset? claimedAtUtc = reader.IsDBNull(9)
             ? null
             : reader.GetFieldValue<DateTimeOffset>(9);
-        Guid claimToken = reader.IsDBNull(13) ? Guid.Empty : reader.GetGuid(13);
-        DateTimeOffset? leaseExpiresAtUtc = reader.IsDBNull(14)
+        Guid claimToken = reader.IsDBNull(18) ? Guid.Empty : reader.GetGuid(18);
+        DateTimeOffset? leaseExpiresAtUtc = reader.IsDBNull(19)
             ? null
-            : reader.GetFieldValue<DateTimeOffset>(14);
+            : reader.GetFieldValue<DateTimeOffset>(19);
         Guid? simulationId = reader.IsDBNull(10) ? null : reader.GetGuid(10);
         DateTimeOffset? finishedAtUtc = reader.IsDBNull(11)
             ? null
@@ -325,9 +378,25 @@ public sealed class EfSimulationJobLeaseRepository :
             claimedAtUtc,
             simulationId,
             finishedAtUtc,
-            failureMessage);
+            failureMessage)
+        {
+            AttemptCount = reader.GetInt32(13),
+            MaxAttempts = reader.GetInt32(14),
+            NextAttemptAtUtc = reader.IsDBNull(15)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(15),
+            LastFailedAtUtc = reader.IsDBNull(16)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(16),
+            LastFailureMessage = reader.IsDBNull(17)
+                ? null
+                : reader.GetString(17)
+        };
 
-        return new SimulationJobClaim(job, claimToken, leaseExpiresAtUtc.Value);
+        SimulationJobClaim claim =
+            new(job, claimToken, leaseExpiresAtUtc.Value);
+        claim.Validate();
+        return claim;
     }
 
     private static void ValidateLeaseDuration(TimeSpan leaseDuration)
@@ -343,9 +412,10 @@ public sealed class EfSimulationJobLeaseRepository :
         string name,
         TimeSpan value)
     {
-        DbParameter parameter = command.CreateParameter();
-        parameter.ParameterName = name;
-        parameter.Value = value;
+        NpgsqlParameter parameter = new(name, NpgsqlDbType.Interval)
+        {
+            Value = value
+        };
         command.Parameters.Add(parameter);
     }
 

@@ -22,11 +22,11 @@ The complete local application stack can run through Docker Compose as separate 
 
 `SingularFlow.Infrastructure` defines the EF Core schema, mappings, migrations, and repository implementations. The containerized API uses the same Npgsql and EF Core persistence path as direct local execution: it creates, lists, retrieves, and deletes simulations while persisting their ordered states in the separate PostgreSQL service. This local Compose stack is a development environment, not a complete production deployment platform.
 
-The API now hosts a configurable background worker for the persistent simulation-job lifecycle. Its processing loop uses `ClaimSimulationJobLeaseHandler` to claim at most one job through the lease repository. A claim contains the job snapshot, an internal claim token, and a lease expiration. `SimulationJobLeaseSupervisor` runs `ProcessClaimedSimulationJobHandler` while `RenewSimulationJobLeaseHandler` renews ownership from a fresh asynchronous dependency-injection scope on every heartbeat, so scoped repositories and `SingularFlowDbContext` instances are not shared across renewal operations. Infrastructure uses PostgreSQL `FOR UPDATE SKIP LOCKED` for atomic pending-job selection and PostgreSQL time for lease validity, while fenced atomic completion persists the simulation, ordered states, and `Completed` transition only for the exact current claim token and an unexpired lease. An empty queue is represented by a `null` claim and waits for the polling interval; both normal processing results continue to the next claim, and unexpected failures wait for the failure delay.
+The API now hosts a configurable background worker for the persistent simulation-job lifecycle. Its processing loop uses `ClaimSimulationJobLeaseHandler` to claim at most one job through the lease repository. A claim contains the job snapshot, an internal claim token, and a lease expiration. `SimulationJobLeaseSupervisor` runs `ProcessClaimedSimulationJobHandler` while `RenewSimulationJobLeaseHandler` renews ownership from a fresh asynchronous dependency-injection scope on every heartbeat, so scoped repositories and `SingularFlowDbContext` instances are not shared across renewal operations. Infrastructure uses PostgreSQL `FOR UPDATE SKIP LOCKED` for atomic pending-job selection and PostgreSQL time for lease validity, while fenced atomic completion persists the simulation, ordered states, and `Completed` transition only for the exact current claim token and an unexpired lease. No eligible unlocked work is represented by a `null` claim and waits for the polling interval; normal processing results (`Completed`, `LeaseLost`, `RetryScheduled`, and `Failed`) continue to the next claim, and unexpected failures wait for the failure delay.
 
 The API supports two simulation-execution paths. The existing synchronous `POST /api/simulations` behavior is unchanged: it calculates and persists a completed simulation before returning `201 Created`. The durable asynchronous path accepts work through `POST /api/simulation-jobs`, validates it before persistence, creates a `Pending` job, and returns `202 Accepted` with the durable snapshot and a `Location` for `GET /api/simulation-jobs/{id}`. The hosted worker later claims and calculates the job outside the HTTP request, then atomically persists the simulation, ordered states, and `Completed` transition. Clients poll the status endpoint, whose successful responses use `Cache-Control: no-store`; missing jobs return `404 Not Found`.
 
-The worker also runs bounded stale-job recovery through `RecoverExpiredSimulationJobsHandler`: expired `Running` jobs return to `Pending` for a later claim, and recovery does not complete or fail jobs itself. Claim-token fencing protects completion, failure, and atomic simulation persistence from stale owners. Runtime validation covered normal execution, expired-lease recovery, reclaim with a new token, active heartbeat renewal, and successful fenced completion after recovery. Calculation remains synchronous once started and cannot be interrupted mid-calculation. Within this design boundary, multiple worker replicas can safely skip locked work, reclaim abandoned jobs, and reject stale owners. The worker is not an exactly-once system and still has no general retry/attempt policy, progress reporting, public cancellation, real-time push, or broader production/distributed-operational hardening.
+The worker also runs bounded stale-job recovery through `RecoverExpiredSimulationJobsHandler`: expired `Running` jobs with attempts remaining return to `Pending` with a delayed eligibility time; exhausted jobs become `Failed`. Claim-token fencing protects completion, failure, and atomic simulation persistence from stale owners. Earlier lease-only runtime validation covered normal execution, expired-lease recovery, reclaim with a new token, active heartbeat renewal, and successful fenced completion after recovery. Calculation remains synchronous once started and cannot be interrupted mid-calculation. Within this design boundary, multiple worker replicas can safely skip locked work, reclaim abandoned jobs, and reject stale owners. The worker is not an exactly-once system and has bounded automatic retries for classified persistence failures, but still has no progress reporting, public cancellation, real-time push, or broader production/distributed-operational hardening.
 
 The project is being developed incrementally with Domain and Application unit tests, API integration tests, continuous integration, protected branches, pull requests, and documented architectural decisions.
 
@@ -53,7 +53,7 @@ The project is being developed incrementally with Domain and Application unit te
 * Keep command-line presentation separate from mathematical calculations.
 * Display the active mathematical and sampling configuration.
 * Display calculated states through a command-line interface.
-* Validate the complete lease-aware solution with 333 automated tests: 42 Domain, 74 Application, 133 API, and 84 Infrastructure tests, with 0 failed and 0 skipped in each of three consecutive Release runs.
+* Retain the earlier lease-only validation baseline of 333 tests; retry validation is recorded separately under [Test](#test), with the final-tree full solution run still pending.
 * Validate every pull request and push to `main` with GitHub Actions, including a build of the API Docker image.
 * Host an ASP.NET Core Web API.
 * Expose `GET /health/live` for process liveness, `GET /health/ready` for PostgreSQL connectivity readiness, and `GET /health` as a backward-compatible readiness alias.
@@ -84,18 +84,18 @@ The project is being developed incrementally with Domain and Application unit te
 * Retrieve durable lifecycle state through `GET /api/simulation-jobs/{id}` with `Cache-Control: no-store` on successful responses and `404 Not Found` for missing jobs.
 * Share one provider-independent Application request-validation boundary between synchronous execution and durable job creation.
 * Validate durable job requests before persistence without sampling times, calculating states, opening a database connection as part of validation, or starting worker processing.
-* Define durable creation and retrieval plus lease-based oldest-first claiming for persistent simulation jobs.
-* Atomically transition one `Pending` job to `Running` through PostgreSQL `FOR UPDATE SKIP LOCKED`, producing a job snapshot, claim token, and lease expiration with deterministic creation-time/UUID ordering.
+* Define durable creation and retrieval plus lease-based eligibility-ordered claiming for persistent simulation jobs.
+* Atomically transition one `Pending` job to `Running` through PostgreSQL `FOR UPDATE SKIP LOCKED`, producing a job snapshot, claim token, and lease expiration with deterministic eligibility-time/creation-time/UUID ordering and an incremented attempt count.
 * Renew exact ownership by job ID and claim token, using PostgreSQL time as the authority for lease validity.
 * Atomically transition a leased `Running` job to `Completed` with a nullable persisted-simulation reference, or to `Failed` with a nonblank failure description bounded to 1,000 characters; terminal transitions require the exact claim token and an unexpired lease and clear lease ownership when successful.
-* Process one lease claim per Application invocation, returning `Completed` or `LeaseLost`; an empty queue is represented by a `null` lease claim.
+* Process one lease claim per Application invocation, returning `Completed`, `LeaseLost`, `RetryScheduled`, or `Failed`; an empty queue is represented by a `null` lease claim.
 * Calculate the stored request through the existing simulation handler and atomically persist its simulation and ordered states with the fenced `Running`-to-`Completed` transition.
-* Attempt a safe `Failed` transition after calculation or thrown finalization errors while preserving and rethrowing the original exception; cancellation is not converted into failure.
+* Classify processing failures, schedule eligible persistence retries under the persisted attempt maximum, and attempt a safe `Failed` transition for non-retryable errors; cancellation is not converted into failure.
 * Preserve completed-job records when their referenced simulation is deleted, clearing only the optional simulation reference.
 * Host a configurable simulation-job worker in the API, with a fresh asynchronous scope per processing iteration.
 * Supervise processing with renewable heartbeats, using a fresh asynchronous scope for every renewal.
-* Recover expired `Running` jobs to `Pending` in bounded batches without completing or failing them.
-* Poll after no work, continue after either normal processing result, and delay after unexpected processing failures.
+* Recover expired `Running` jobs in bounded batches, scheduling delayed `Pending` work when attempts remain or marking exhausted jobs `Failed`.
+* Poll after no eligible work, continue after each normal processing result, and delay after unexpected processing failures.
 
 ## Mathematical model
 
@@ -388,6 +388,8 @@ singular-flow/
 │   │   ├── Workers/
 │   │   │   ├── ISimulationJobWorkerDelay.cs
 │   │   │   ├── SimulationJobLeaseSupervisor.cs
+│   │   │   ├── SimulationJobRetryOptions.cs
+│   │   │   ├── SimulationJobRetryOptionsValidator.cs
 │   │   │   ├── SimulationJobWorker.cs
 │   │   │   ├── SimulationJobWorkerDelay.cs
 │   │   │   └── SimulationJobWorkerOptions.cs
@@ -404,13 +406,19 @@ singular-flow/
 │   │   │   ├── FailSimulationJobHandler.cs
 │   │   │   ├── GetSimulationJobHandler.cs
 │   │   │   ├── ISimulationJobCompletionRepository.cs
+│   │   │   ├── ISimulationJobFailureClassifier.cs
 │   │   │   ├── ISimulationJobLeaseRepository.cs
 │   │   │   ├── ISimulationJobRepository.cs
+│   │   │   ├── ISimulationJobRetryRepository.cs
 │   │   │   ├── ProcessClaimedSimulationJobHandler.cs
 │   │   │   ├── ProcessClaimedSimulationJobResult.cs
 │   │   │   ├── RecoverExpiredSimulationJobsHandler.cs
 │   │   │   ├── RenewSimulationJobLeaseHandler.cs
 │   │   │   ├── SimulationJobClaim.cs
+│   │   │   ├── SimulationJobFailureClassification.cs
+│   │   │   ├── SimulationJobFailurePhase.cs
+│   │   │   ├── SimulationJobRetryDecision.cs
+│   │   │   ├── SimulationJobRetryPolicy.cs
 │   │   │   ├── SimulationJobResult.cs
 │   │   │   └── SimulationJobStatus.cs
 │   │   ├── Simulations/
@@ -454,15 +462,18 @@ singular-flow/
 │       │   ├── Entities/
 │       │   │   └── SimulationJobEntity.cs
 │       │   ├── EfSimulationJobCompletionRepository.cs
+│       │   ├── EfSimulationJobFailureClassifier.cs
 │       │   ├── EfSimulationJobLeaseRepository.cs
 │       │   ├── EfSimulationJobRepository.cs
+│       │   ├── EfSimulationJobRetryRepository.cs
 │       │   ├── EfSimulationRepository.cs
 │       │   ├── Migrations/
 │       │   │   ├── 20260921055058_InitialPersistence.cs
 │       │   │   ├── 20261002042411_AddSimulationJobs.cs
 │       │   │   ├── 20261015035419_AddSimulationJobClaimedAtUtc.cs
 │       │   │   ├── 20261015052532_AddSimulationJobTerminalTransitions.cs
-│       │   │   └── 20261019230251_AddSimulationJobLeases.cs
+│       │   │   ├── 20261019230251_AddSimulationJobLeases.cs
+│       │   │   └── 20261118183151_AddSimulationJobRetries.cs
 │       │   └── SingularFlowDbContext.cs
 │       └── SingularFlow.Infrastructure.csproj
 ├── tests/
@@ -492,6 +503,7 @@ singular-flow/
 │   │   │   ├── SimulationJobWorkerCompositionTests.cs
 │   │   │   ├── SimulationJobWorkerConfigurationTests.cs
 │   │   │   ├── SimulationJobWorkerOptionsTests.cs
+│   │   │   ├── SimulationJobRetryOptionsTests.cs
 │   │   │   ├── SimulationJobWorkerTestDoubles.cs
 │   │   │   └── SimulationJobWorkerTests.cs
 │   │   └── SingularFlow.Api.Tests.csproj
@@ -500,6 +512,8 @@ singular-flow/
 │   │   │   ├── CreateSimulationJobHandlerTests.cs
 │   │   │   ├── GetSimulationJobHandlerTests.cs
 │   │   │   ├── ProcessClaimedSimulationJobHandlerTests.cs
+│   │   │   ├── ProcessClaimedSimulationJobRetryTests.cs
+│   │   │   ├── SimulationJobRetryContractTests.cs
 │   │   │   ├── SimulationJobLeaseHandlerTests.cs
 │   │   │   └── TransitionSimulationJobHandlerTests.cs
 │   │   ├── Simulations/
@@ -523,13 +537,16 @@ singular-flow/
 │       │   ├── DesignTime/
 │       │   │   └── SingularFlowDbContextFactoryTests.cs
 │       │   ├── EfSimulationJobCompletionRepositoryTests.cs
+│       │   ├── EfSimulationJobFailureClassifierTests.cs
 │       │   ├── EfSimulationJobLeaseCompletionRepositoryTests.cs
 │       │   ├── EfSimulationJobLeaseRepositoryTests.cs
 │       │   ├── EfSimulationJobLeaseTerminalRepositoryTests.cs
 │       │   ├── EfSimulationJobRepositoryTests.cs
+│       │   ├── EfSimulationJobRetryRepositoryTests.cs
 │       │   ├── EfSimulationRepositoryTests.cs
 │       │   ├── SimulationJobEntityConfigurationTests.cs
 │       │   ├── SimulationJobLeaseConfigurationTests.cs
+│       │   ├── SimulationJobRetryConfigurationTests.cs
 │       │   ├── SimulationJobTerminalConfigurationTests.cs
 │       │   └── SingularFlowDbContextModelTests.cs
 │       └── SingularFlow.Infrastructure.Tests.csproj
@@ -625,7 +642,7 @@ The `SimulationJobs` area defines the durable-request boundary for background ex
 
 The shared validation requires a finite `singularTime` greater than zero; a finite `concentrationExponent` greater than zero and strictly less than `0.01`; a finite `startTime` greater than or equal to zero; a finite `endTime` greater than `startTime` and strictly less than `singularTime`; `sampleCount` from 2 through 100,000 inclusive; and `samplingMode` equal to `uniform` or `logarithmic` at the HTTP boundary.
 
-`SimulationJobStatus` defines `Pending`, `Running`, `Completed`, `Failed`, and `Cancelled`. Creation produces `Pending`; a lease claim changes one eligible job to `Running` and returns a `SimulationJobClaim` containing its snapshot, a claim token, and lease expiration. Claim tokens are internal ownership fences and are not exposed by HTTP contracts. `SimulationJobResult` contains the job ID, original `RunSimulationRequest`, status, creation and claim timestamps, nullable simulation ID, nullable terminal timestamp, and nullable failure message.
+`SimulationJobStatus` defines `Pending`, `Running`, `Completed`, `Failed`, and `Cancelled`. Creation produces `Pending`; a lease claim changes one eligible job to `Running` and returns a `SimulationJobClaim` containing its snapshot, a claim token, and lease expiration. Claim tokens are internal ownership fences and are not exposed by HTTP contracts. `SimulationJobResult` contains the job ID, original `RunSimulationRequest`, status, creation and claim timestamps, nullable simulation ID, nullable terminal timestamp, nullable failure message, attempt count, persisted maximum attempts, and next eligibility timestamp. Intermediate failure metadata remains internal.
 
 `ISimulationJobLeaseRepository` owns lease operations: claim the next `Pending` job for a requested lease duration, renew exact ownership by job ID and claim token, and recover expired `Running` jobs in bounded batches. `ISimulationJobRepository` owns job creation, retrieval, and fenced completion or failure; both terminal operations require the job ID and claim token, completion also requires the simulation ID, and failure also requires a safe message. It no longer owns claiming. `CompleteSimulationJobHandler` and `FailSimulationJobHandler` delegate to those terminal operations. Failure descriptions must be nonblank and no longer than 1,000 characters; the processing path records fixed, non-sensitive phase descriptions rather than exception stack traces or internal database details.
 
@@ -633,7 +650,7 @@ The shared validation requires a finite `singularTime` greater than zero; a fini
 
 `ProcessClaimedSimulationJobHandler` composes calculation and failure behavior with `ISimulationJobCompletionRepository`, whose only operation atomically persists the simulation and ordered states and completes the job using the exact claim token; there is no unfenced overload. The handler uses the exact stored request through `RunSimulationHandler` and returns `ProcessClaimedSimulationJobResult.Completed` after successfully fenced and persisted terminal completion. It returns `ProcessClaimedSimulationJobResult.LeaseLost` when completion is rejected because ownership or lease validity is no longer current; that normal result is not converted into `Failed`. Empty queue is represented earlier by the lease claim returning `null`, not by a processing-result case.
 
-The handler validates claimed and completed snapshots as contracts. Exceptions from calculation or finalization attempt a token-fenced `Failed` transition using a fixed safe phase description, then rethrow the original exception even if recording failure also fails. A rejected failure transition does not overwrite a newer owner. `OperationCanceledException` is not converted into `Failed`. Calculation itself is synchronous, so cancellation is observed at boundaries before and after calculation rather than interrupting it mid-execution.
+The handler validates claimed, completed, and retry-decision snapshots as contracts. Non-retryable calculation or finalization exceptions attempt a token-fenced `Failed` transition using a fixed safe phase description, then rethrow the original exception even if recording failure also fails. Classified retryable persistence exceptions instead use `ISimulationJobRetryRepository`, returning `RetryScheduled`, `Failed` on exhaustion, or `LeaseLost` on rejected ownership. If recording a retry fails, the original exception is preserved without a terminal-failure fallback; requested cancellation during retry recording propagates cancellation. A rejected transition does not overwrite a newer owner. `OperationCanceledException` is not converted into `Failed`. Calculation itself is synchronous, so cancellation is observed at boundaries before and after calculation rather than interrupting it mid-execution.
 
 Application remains independent of EF Core, PostgreSQL, ASP.NET Core, hosted services, and queue implementations. The API-hosted worker calls this provider-independent one-job use case; Application does not depend on ASP.NET Core hosting.
 
@@ -650,11 +667,12 @@ Responsibilities include:
 * Defining `SingularFlowDbContext` and its `simulations`, `simulation_states`, and `simulation_jobs` sets.
 * Mapping separate Infrastructure persistence entities instead of mapping Domain records directly.
 * Configuring generated keys, explicit PostgreSQL types, snake_case identifiers, constraints, indexes, and the simulation-to-states relationship.
-* Tracking `20260921055058_InitialPersistence`, `20261002042411_AddSimulationJobs`, `20261015035419_AddSimulationJobClaimedAtUtc`, `20261015052532_AddSimulationJobTerminalTransitions`, and `20261019230251_AddSimulationJobLeases`.
+* Tracking `20260921055058_InitialPersistence`, `20261002042411_AddSimulationJobs`, `20261015035419_AddSimulationJobClaimedAtUtc`, `20261015052532_AddSimulationJobTerminalTransitions`, `20261019230251_AddSimulationJobLeases`, and `20261118183151_AddSimulationJobRetries`.
 * Implementing `ISimulationRepository` with `EfSimulationRepository`.
 * Implementing `ISimulationJobRepository` with `EfSimulationJobRepository` for job creation, retrieval, and fenced terminal transitions.
 * Implementing `ISimulationJobLeaseRepository` with `EfSimulationJobLeaseRepository` for claiming, renewal, and bounded expired-job recovery.
 * Implementing `ISimulationJobCompletionRepository` with `EfSimulationJobCompletionRepository`.
+* Implementing `ISimulationJobRetryRepository` with `EfSimulationJobRetryRepository` and persistence-failure classification with `EfSimulationJobFailureClassifier`.
 * Saving one simulation and all ordered state entities with one `SaveChangesAsync` call.
 * Returning the generated simulation ID and database-generated creation timestamp after saving.
 * Querying simulations by persisted ID with `AsNoTracking()` and loading their related states.
@@ -667,17 +685,17 @@ Responsibilities include:
 
 `EfSimulationJobRepository` persists all six original request values, explicitly creates a `Pending` job with a null claim timestamp, and uses one `SaveChangesAsync` operation with the caller's cancellation token. It returns the EF-generated UUID and PostgreSQL-generated creation timestamp. Retrieval is by primary-key ID with `AsNoTracking`, reconstructs the original `RunSimulationRequest`, maps nullable lifecycle fields, and returns `null` when the ID is missing.
 
-`EfSimulationJobLeaseRepository` claims through one parameterized PostgreSQL statement rather than `SaveChangesAsync` or a tracked entity. It selects the oldest unlocked `Pending` row by `created_at_utc` and then `id`, locks it with `FOR UPDATE SKIP LOCKED`, updates it to `Running`, assigns `claimed_at_utc = CURRENT_TIMESTAMP`, generates a claim token, and calculates lease expiration from PostgreSQL time. Renewal requires the job ID, exact claim token, `Running` status, and a lease that has not expired according to PostgreSQL. Recovery selects expired `Running` jobs by lease expiration and ID in bounded, lock-skipping batches, then clears claim metadata and returns them to `Pending`; it does not complete or fail them.
+`EfSimulationJobLeaseRepository` claims through one parameterized PostgreSQL statement rather than `SaveChangesAsync` or a tracked entity. It selects an unlocked `Pending` row whose eligibility time has arrived and whose attempt count is below its persisted maximum, ordered by `next_attempt_at_utc`, `created_at_utc`, and then `id`, locks it with `FOR UPDATE SKIP LOCKED`, increments `attempt_count`, clears `next_attempt_at_utc`, updates it to `Running`, assigns `claimed_at_utc = CURRENT_TIMESTAMP`, generates a claim token, and calculates lease expiration from PostgreSQL time. Renewal requires the job ID, exact claim token, `Running` status, and a lease that has not expired according to PostgreSQL. Recovery selects expired `Running` jobs by lease expiration and ID in bounded, lock-skipping batches, then clears ownership and either schedules delayed `Pending` work or marks exhausted jobs `Failed`, without incrementing the attempt count during recovery.
 
 Completion and failure each use a parameterized conditional `UPDATE ... RETURNING` requiring `Running` status, the exact claim token, and an unexpired lease according to PostgreSQL. Successful terminal transitions set `finished_at_utc = CURRENT_TIMESTAMP` and clear the claim token and lease expiration. Completion associates the existing simulation ID; failure stores a bounded description. A missing job, stale token, expired lease, or non-`Running` state returns `null`, preventing older owners from overwriting current state. These commands enlist in an existing EF transaction when present; otherwise PostgreSQL autocommit provides single-statement atomicity. They do not require a tracked job entity. A missing simulation ID fails through the foreign-key constraint.
 
 `EfSimulationJobCompletionRepository` reuses `EfSimulationRepository` and `EfSimulationJobRepository` with the same `SingularFlowDbContext`, making simulation persistence, ordered-state insertion, and conditional completion one atomic operation. Without a current transaction it owns and commits a transaction only after completion succeeds. Within a caller-owned transaction it creates and releases a savepoint; rejection or an exception rolls back only to that savepoint and leaves the caller transaction under caller control. A null transition result is returned only after rollback succeeds. Entities introduced by a rolled-back attempt are selectively detached, while pre-existing tracked entities are preserved. Because the existing simulation save uses context-wide `SaveChangesAsync`, the operation rejects contexts that already have pending Added, Modified, or Deleted changes rather than risking flushing unrelated work. It does not clear the change tracker.
 
-The API composition root registers lease claim, renewal, recovery, failure, and claimed-job processing handlers together with the job, lease, and atomic-completion repository abstractions. Infrastructure continues to own the EF Core and PostgreSQL implementations; lease supervision and the worker remain in the API layer.
+The API composition root registers lease claim, renewal, recovery, failure, and claimed-job processing handlers together with the job, lease, retry, and atomic-completion repository abstractions, the retry policy, and failure classifier. Infrastructure continues to own the EF Core and PostgreSQL implementations; lease supervision and the worker remain in the API layer.
 
 Infrastructure depends directly on `SingularFlow.Application`, which in turn depends on Domain. EF Core remains confined to Infrastructure and the API composition root; Application and Domain do not depend on it.
 
-The persisted simulation query and deletion features use their existing schema. The second migration introduces the separate job table, the third adds its nullable claim timestamp, and the fourth adds terminal-transition metadata and the optional simulation relationship. The fifth migration, `20261019230251_AddSimulationJobLeases`, adds nullable claim-token and lease-expiration columns, a recovery index, and the revised lifecycle constraint; it also normalizes existing `Running` rows to `Pending`. The token and lease columns have no defaults or EF-generated values.
+The persisted simulation query and deletion features use their existing schema. The second migration introduces the separate job table, the third adds its nullable claim timestamp, and the fourth adds terminal-transition metadata and the optional simulation relationship. The fifth migration, `20261019230251_AddSimulationJobLeases`, adds nullable claim-token and lease-expiration columns, a recovery index, and the revised lifecycle constraint; it also normalizes existing `Running` rows to `Pending`. The token and lease columns have no defaults or EF-generated values. The sixth migration, `20261118183151_AddSimulationJobRetries`, adds attempt counters, eligibility and intermediate failure metadata, revised constraints, and an eligibility-first claim index; details appear under [EF Core migrations and database schema](#ef-core-migrations-and-database-schema).
 
 ### SingularFlow.Cli
 
@@ -724,7 +742,7 @@ The test project depends directly on `SingularFlow.Domain`.
 
 Contains automated tests for application use-case behavior.
 
-The current complete-solution run counts 74 Application tests. Application coverage verifies:
+The earlier lease-only full solution run counted 74 Application tests; this is not a retry-tree total. Application coverage verifies:
 
 * Rejection of a null simulation request.
 * Execution with uniform sampling.
@@ -756,7 +774,7 @@ Contains integration tests for the ASP.NET Core host, including database-backed 
 
 `HealthEndpointTests.cs` covers database-independent liveness. `DatabaseHealthEndpointTests.cs` covers healthy readiness and compatibility behavior against PostgreSQL, plus the separation between liveness and readiness when that dependency is unavailable.
 
-The current complete-solution run counts 133 API tests. API coverage includes the existing HTTP behavior plus lease-aware worker cases. The 38-case supervisor suite includes 11 structural-invalid-claim cases, and the database-free worker-related selection passes all 76 cases. It verifies:
+The earlier lease-only full solution run counted 133 API tests, including a 38-case supervisor suite and a 76-case database-free worker selection. Retry validation is recorded separately under [Test](#test). Coverage verifies:
 
 * `GET /health/live` returns `200 OK` and plain-text `Healthy` without connecting to PostgreSQL.
 * `GET /health/ready` and the compatibility `GET /health` return `200 OK` and plain-text `Healthy` when the configured `singular_flow_tests` PostgreSQL database is available.
@@ -785,7 +803,7 @@ The test project depends directly on `SingularFlow.Api`.
 
 ### SingularFlow.Infrastructure.Tests
 
-The current complete-solution run counts 84 Infrastructure tests, including lease-aware EF Core metadata, claiming, renewal, recovery, fenced terminal transitions, and fenced atomic simulation-job completion.
+The earlier lease-only full solution run counted 84 Infrastructure tests, including lease-aware EF Core metadata, claiming, renewal, recovery, fenced terminal transitions, and fenced atomic simulation-job completion.
 
 The tests verify table and column mappings, generated primary keys, PostgreSQL column types, required cascade relationships, indexes, check constraints, the `CURRENT_TIMESTAMP` default, Npgsql provider configuration, persistence of one simulation with ordered states, and query reconstruction in `Sequence` order. Missing IDs return `null`. Repository integration tests also verify total count, page metadata, stable descending ordering, first and later pages, summary projection, an out-of-range page with empty items and the original total count, deletion of an existing simulation and its states, and `false` for a missing deletion ID. The database tests apply pending migrations and use reversible transactions for inserted repository data. The job-creation integration test uses a `RepeatableRead` transaction to keep its before/after table-count snapshot stable when unrelated API database tests run under default solution parallelism; this changes neither production transaction behavior nor test parallelism.
 
@@ -872,7 +890,7 @@ API-hosted SimulationJobWorker
         └── RenewSimulationJobLeaseHandler
             → fresh asynchronous scope for every renewal
     → RecoverExpiredSimulationJobsHandler
-        → bounded expired Running-to-Pending recovery
+        → bounded expired-job recovery: delayed Pending or exhausted Failed
                  │
                  ▼
 GET /api/simulation-jobs/{id} → durable lifecycle snapshot
@@ -883,13 +901,13 @@ The API owns hosted-service composition, Application owns provider-independent p
 The lease-aware runtime flow is:
 
 1. `SimulationJobWorker` runs bounded recovery periodically through `RecoverExpiredSimulationJobsHandler`.
-2. `ClaimSimulationJobLeaseHandler` selects at most one `Pending` job.
-3. PostgreSQL atomically assigns `claimed_at_utc`, a new claim token, and `lease_expires_at_utc` while using `FOR UPDATE SKIP LOCKED`.
+2. `ClaimSimulationJobLeaseHandler` selects at most one eligible `Pending` job with attempts remaining.
+3. PostgreSQL atomically increments the attempt count, clears the eligibility timestamp, and assigns `claimed_at_utc`, a new claim token, and `lease_expires_at_utc` while using `FOR UPDATE SKIP LOCKED`.
 4. `SimulationJobLeaseSupervisor` runs `ProcessClaimedSimulationJobHandler` and the heartbeat concurrently; every renewal resolves `RenewSimulationJobLeaseHandler` in a fresh asynchronous scope.
 5. Completion and failure submit the job ID and claim token, and PostgreSQL decides whether the lease is still current.
 6. Successful atomic completion persists the simulation and ordered states and transitions the owned job to `Completed`; both terminal paths clear token and lease metadata.
 7. Rejected ownership produces `ProcessClaimedSimulationJobResult.LeaseLost`, so a stale processor cannot overwrite a newer owner.
-8. Recovery can return an expired `Running` job to `Pending` and clear its ownership; a later reclaim receives a new token, while the previous token can neither complete nor fail it.
+8. Recovery can return an expired `Running` job with attempts remaining to delayed `Pending` or mark an exhausted job `Failed`, clearing ownership in either case; a later reclaim receives a new token, while the previous token can neither complete nor fail it.
 9. A job whose lease is actively renewed remains `Running` and is not recovered as expired.
 
 ## Design decisions
@@ -924,28 +942,29 @@ The local Compose stack does not terminate TLS, and the API container does not s
 
 `SingularFlowDbContext` maps separate Infrastructure entities rather than coupling EF Core to Domain records. A simulation has a generated `uuid` key and many required state rows; each state has a generated `bigint` key, and deleting a simulation cascades to its states.
 
-A simulation job is a separate durable request record, not a completed simulation. It has an optional `simulation_id` foreign key to `simulations` but no entity navigation; PostgreSQL uses `ON DELETE SET NULL` so deleting a simulation retains its completed job. Jobs record `created_at_utc`, nullable `claimed_at_utc`, internal nullable `claim_token`, nullable `lease_expires_at_utc`, and nullable `finished_at_utc`; failed jobs also store a nullable, bounded `failure_message`. PostgreSQL time is authoritative for lease validity. The model has no progress, attempt counter, cancellation-request, or worker-identity column.
+A simulation job is a separate durable request record, not a completed simulation. It has an optional `simulation_id` foreign key to `simulations` but no entity navigation; PostgreSQL uses `ON DELETE SET NULL` so deleting a simulation retains its completed job. Jobs record `created_at_utc`, nullable `claimed_at_utc`, internal nullable `claim_token`, nullable `lease_expires_at_utc`, and nullable `finished_at_utc`; failed jobs also store a nullable, bounded `failure_message`. PostgreSQL time is authoritative for lease validity. The model also persists attempt counters, a pending-job eligibility timestamp, and internal intermediate failure metadata. It has no progress, cancellation-request, or worker-identity column.
 
 Implemented processing follows these transitions:
 
 ```text
 Pending -> Running -> Completed
 Pending -> Running -> Failed
+Running -> Pending -> Running   (delayed retry or expired-lease recovery)
 ```
 
 `Cancelled` exists in the lifecycle vocabulary and persistence constraints, but no public cancellation behavior exists.
 
 ### Atomic simulation-job claiming
 
-`EfSimulationJobLeaseRepository.ClaimNextPendingAsync` uses one PostgreSQL CTE statement so selection and transition cannot be separated by a race. The statement filters `Pending` rows, orders by `created_at_utc ASC, id ASC`, selects at most one row with `FOR UPDATE SKIP LOCKED`, changes it to `Running`, assigns `claimed_at_utc = CURRENT_TIMESTAMP`, generates an internal claim token, sets the lease expiration from PostgreSQL time, and returns a `SimulationJobClaim`. Locked work is skipped rather than blocking an unrelated claimer, while the existing `(status, created_at_utc, id)` index supports the predicate and deterministic order.
+`EfSimulationJobLeaseRepository.ClaimNextPendingAsync` uses one PostgreSQL CTE statement so selection and transition cannot be separated by a race. The statement filters `Pending` rows with `next_attempt_at_utc <= CURRENT_TIMESTAMP` and `attempt_count < max_attempts`, orders by `next_attempt_at_utc ASC, created_at_utc ASC, id ASC`, selects at most one row with `FOR UPDATE SKIP LOCKED`, changes it to `Running`, assigns `claimed_at_utc = CURRENT_TIMESTAMP`, generates an internal claim token, sets the lease expiration from PostgreSQL time, increments the attempt count, clears the eligibility timestamp, and returns a `SimulationJobClaim`. Locked work is skipped rather than blocking an unrelated claimer, while the `(status, next_attempt_at_utc, created_at_utc, id)` index supports the predicate and deterministic order.
 
 Status values are database parameters. Lease and terminal-transition commands participate in an existing EF transaction when one is active and otherwise rely on PostgreSQL autocommit for each atomic statement. Renewal and terminal updates require `status = 'Running'`, the exact claim token, and a lease that PostgreSQL still considers valid. A successful terminal transition clears the token and expiration; an ineligible update returns `null`. Terminal updates do not call `SaveChangesAsync` or require a tracked job entity. Completion references an existing simulation but does not create one, calculate states, or execute a simulation.
 
-`SimulationJobWorker` is the API-hosted runtime consumer of this persistence capability. It claims through `ClaimSimulationJobLeaseHandler`, then passes the claim to `SimulationJobLeaseSupervisor`. The supervisor rejects invalid arguments and cancellation before calling the centralized structural claim validation; only a valid claim can cause processing cancellation sources, scopes, tasks, delays, handler resolution, repository activity, or supervision logs to be created. It then processes through `ProcessClaimedSimulationJobHandler` while renewing through `RenewSimulationJobLeaseHandler`; every renewal creates and disposes a fresh asynchronous scope. The supervisor never decides current lease validity by comparing timestamps with a local clock; renewal and fenced persistence leave that decision to PostgreSQL. `Completed` means fenced terminal completion was persisted. `LeaseLost` means completion was rejected because ownership or lease validity was no longer current, and it is not converted into `Failed`. The worker continues to the next claim after either result. A `null` claim waits for the polling interval, and an unexpected processing or scope-disposal failure is logged before the configured failure delay. Host-requested cancellation exits cleanly and is not recorded as a failed job. Failure inside the delay adapter faults the worker instead of recursively retrying the delay.
+`SimulationJobWorker` is the API-hosted runtime consumer of this persistence capability. It claims through `ClaimSimulationJobLeaseHandler`, then passes the claim to `SimulationJobLeaseSupervisor`. The supervisor rejects invalid arguments and cancellation before calling the centralized structural claim validation; only a valid claim can cause processing cancellation sources, scopes, tasks, delays, handler resolution, repository activity, or supervision logs to be created. It then processes through `ProcessClaimedSimulationJobHandler` while renewing through `RenewSimulationJobLeaseHandler`; every renewal creates and disposes a fresh asynchronous scope. The supervisor never decides current lease validity by comparing timestamps with a local clock; renewal and fenced persistence leave that decision to PostgreSQL. `Completed` means fenced terminal completion was persisted. `LeaseLost` means completion was rejected because ownership or lease validity was no longer current, and it is not converted into `Failed`. `RetryScheduled` means a delayed `Pending` transition was persisted, and `Failed` means the retry budget was exhausted. The worker continues to the next claim after each of these normal results. A `null` claim waits for the polling interval, and an unexpected processing or scope-disposal failure is logged before the configured failure delay. Host-requested cancellation exits cleanly and is not recorded as a failed job. Failure inside the delay adapter faults the worker instead of recursively retrying the delay.
 
-`RecoverExpiredSimulationJobsHandler` runs on the worker's recovery loop and returns expired `Running` jobs to `Pending` in bounded batches. Recovery clears claim metadata but does not complete or fail jobs itself. This provides stale-lease recovery after an abandoned claim; broader production and distributed-operational hardening remains future work.
+`RecoverExpiredSimulationJobsHandler` runs on the worker's recovery loop in bounded batches. Expired `Running` jobs with attempts remaining become delayed `Pending` jobs; exhausted jobs become `Failed`. Recovery clears ownership and does not increment attempts or complete simulations. This provides stale-lease recovery after an abandoned claim; broader production and distributed-operational hardening remains future work.
 
-The public asynchronous API is a durable database-backed producer and status surface; it does not replace the synchronous API and does not use an in-memory queue or channel. Claim tokens and lease expiration stay internal: they are absent from HTTP contracts, public responses, OpenAPI, and normal logs. The public endpoints are unchanged: POST continues to return `202 Accepted`, while GET returns public snapshots with `pending`, `running`, `completed`, `failed`, or `cancelled`. `Cancelled` remains lifecycle vocabulary and a persistence constraint value without user-requested cancellation behavior. There is no public job list, cancellation, retry, or deletion endpoint. Progress reporting, a general retry/attempt policy, worker identity, and broader production observability remain unimplemented. Clients must poll the status GET because SignalR or other real-time push is not implemented. A user interface and production deployment also remain future work.
+The public asynchronous API is a durable database-backed producer and status surface; it does not replace the synchronous API and does not use an in-memory queue or channel. Claim tokens and lease expiration stay internal: they are absent from HTTP contracts, public responses, OpenAPI, and normal logs. The public endpoints are unchanged: POST continues to return `202 Accepted`, while GET returns public snapshots with `pending`, `running`, `completed`, `failed`, or `cancelled`. `Cancelled` remains lifecycle vocabulary and a persistence constraint value without user-requested cancellation behavior. There is no public job list, cancellation, retry, or deletion endpoint. Automatic retries are bounded and limited to classified persistence failures. Progress reporting, worker identity, and broader production observability remain unimplemented. Clients must poll the status GET because SignalR or other real-time push is not implemented. A user interface and production deployment also remain future work.
 
 The mappings use snake_case PostgreSQL identifiers and explicit column types. The schema enforces the supported sample count, concentration exponent, time ordering, and non-negative state sequence with database check constraints. It also defines a unique `(simulation_id, sequence)` index, an index on `created_at_utc`, and a `CURRENT_TIMESTAMP` default for `created_at_utc`.
 
@@ -1055,7 +1074,7 @@ The public API supports both execution styles. `POST /api/simulations` remains s
 
 ### Dedicated HTTP contracts
 
-`RunSimulationApiRequest`, `RunSimulationApiResponse`, `SimulationStateResponse`, `PagedSimulationsResponse`, `SimulationSummaryResponse`, and `SimulationJobApiResponse` define the JSON boundary independently of Application and Domain models. The job response exposes `id`, `status`, the original `request`, `createdAtUtc`, `claimedAtUtc`, `finishedAtUtc`, `simulationId`, and `failureMessage`; nullable lifecycle fields remain serialized as `null`. HTTP representation can evolve without exposing mathematical domain types directly.
+`RunSimulationApiRequest`, `RunSimulationApiResponse`, `SimulationStateResponse`, `PagedSimulationsResponse`, `SimulationSummaryResponse`, and `SimulationJobApiResponse` define the JSON boundary independently of Application and Domain models. The job response exposes `id`, `status`, the original `request`, `createdAtUtc`, `claimedAtUtc`, `finishedAtUtc`, `simulationId`, `failureMessage`, `attemptCount`, `maxAttempts`, and `nextAttemptAtUtc`; nullable lifecycle fields remain serialized as `null`. HTTP representation can evolve without exposing mathematical domain types directly.
 
 ### HTTP contract mapper
 
@@ -1101,7 +1120,7 @@ The Dockerfile health check uses Alpine's available `wget` implementation to cal
 
 OpenAPI generation is enabled only in the Development environment and currently produces an OpenAPI 3.1.1 document.
 
-The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, `GET /api/simulations/{id}` with `200` and `404`, and `DELETE /api/simulations/{id}` with `204` and `404`. It also includes `POST /api/simulation-jobs` with its required request body and `202` and `400` responses, plus `GET /api/simulation-jobs/{id}` with a UUID path parameter and `200` and `404` responses. The job response schema includes the nested request and nullable lifecycle fields.
+The document includes collection `GET /api/simulations` with `page` and `pageSize` query parameters and `200` and `400` responses, `POST /api/simulations` with `201` and `400`, `GET /api/simulations/{id}` with `200` and `404`, and `DELETE /api/simulations/{id}` with `204` and `404`. It also includes `POST /api/simulation-jobs` with its required request body and `202` and `400` responses, plus `GET /api/simulation-jobs/{id}` with a UUID path parameter and `200` and `404` responses. The job response schema includes the nested request, non-null integer `attemptCount` and `maxAttempts`, and nullable date-time `nextAttemptAtUtc` alongside nullable lifecycle fields.
 
 Runtime job `status` and request `samplingMode` values are explicit lowercase strings. The current public contracts expose them as string properties, so the generated schema does not enumerate their allowed values without custom schema infrastructure; runtime mapping and validation remain explicit. The operational endpoints `/health`, `/health/live`, and `/health/ready` are intentionally excluded because they are mapped health checks rather than controller operations.
 
@@ -1204,9 +1223,12 @@ claimedAtUtc
 finishedAtUtc
 simulationId
 failureMessage
+attemptCount
+maxAttempts
+nextAttemptAtUtc
 ```
 
-An initially accepted job has `status = pending`; `claimedAtUtc`, `finishedAtUtc`, `simulationId`, and `failureMessage` are `null`. Invalid requests return `400 Bad Request` through the same HTTP error behavior as synchronous execution.
+An initially accepted job has `status = pending`, `attemptCount = 0`, the persisted `maxAttempts`, and an initial `nextAttemptAtUtc` eligibility timestamp generated by PostgreSQL; `claimedAtUtc`, `finishedAtUtc`, `simulationId`, and `failureMessage` are `null`. Invalid requests return `400 Bad Request` through the same HTTP error behavior as synchronous execution.
 
 Retrieve current durable state with:
 
@@ -1215,6 +1237,18 @@ GET /api/simulation-jobs/{id}
 ```
 
 An existing job returns `200 OK` and `Cache-Control: no-store`; a missing job returns `404 Not Found`. Public status values are `pending`, `running`, `completed`, `failed`, and `cancelled`, and the nested request uses `uniform` or `logarithmic`. Null lifecycle fields remain present as JSON `null`.
+
+The three retry fields are additive on successful POST (`202 Accepted`) and GET (`200 OK`) responses. `attemptCount` counts attempts started, including the first claim, rather than retries completed. `maxAttempts` is the maximum persisted for this job at creation. `nextAttemptAtUtc` is the stored claim-eligibility time for a pending job; it is `null` for running and terminal jobs. An initial eligibility timestamp with attempt count `0` does not mean the job has already retried, and reaching that timestamp does not guarantee immediate execution.
+
+Compact response-field examples (timestamps are illustrative; other response fields are omitted):
+
+| `status` | `attemptCount` | `maxAttempts` | `nextAttemptAtUtc` |
+|---|---:|---:|---|
+| `"pending"` (newly created) | 0 | 3 | `"2026-11-25T12:00:00+00:00"` |
+| `"pending"` (retry scheduled after first attempt) | 1 | 3 | `"2026-11-25T12:00:05+00:00"` |
+| `"running"` (second attempt started) | 2 | 3 | `null` |
+| `"completed"` (second attempt succeeded) | 2 | 3 | `null` |
+| `"failed"` (attempts exhausted) | 3 | 3 | `null` |
 
 A completed job normally exposes its persisted `simulationId`. If that simulation is later deleted, the job remains `completed` while `simulationId` becomes `null` because the relationship uses `ON DELETE SET NULL`. Failure messages are fixed, safe server descriptions rather than internal exception details.
 
@@ -1445,7 +1479,7 @@ The repository tracks `dotnet-ef` 10.0.12 in `dotnet-tools.json`. Restore the lo
 dotnet tool restore
 ```
 
-The repository contains five migrations. The initial migration, `20260921055058_InitialPersistence`, creates:
+The repository contains six migrations. The initial migration, `20260921055058_InitialPersistence`, creates:
 
 * `simulations`, containing the requested configuration, sampling mode, and creation timestamp.
 * `simulation_states`, containing the ordered calculated states and a required foreign key to `simulations` with cascade deletion.
@@ -1457,6 +1491,8 @@ The third migration, `20261015035419_AddSimulationJobClaimedAtUtc`, adds only th
 The fourth migration, `20261015052532_AddSimulationJobTerminalTransitions`, adds nullable `simulation_id uuid`, `finished_at_utc timestamp with time zone`, and `failure_message character varying(1000)` columns to `simulation_jobs`. It adds the lifecycle check constraint, the non-unique `ix_simulation_jobs_simulation_id` index, and the optional `simulation_id` foreign key to `simulations` with `ON DELETE SET NULL`. It changes no other table. Its `Down` operation removes only that foreign key, index, constraint, and the three added columns.
 
 The fifth migration, `20261019230251_AddSimulationJobLeases`, adds nullable `claim_token uuid` and `lease_expires_at_utc timestamp with time zone` columns without database defaults or EF-generated values. Its `Up` normalizes existing `Running` rows to `Pending`, adds the non-unique `ix_simulation_jobs_status_lease_expires_at_utc_id` recovery index, preserves the existing pending-claim index, and replaces the lifecycle constraint with lease-aware invariants. Its `Down` removes the lease columns and recovery index and restores the previous lifecycle constraint. It does not add another migration or alter the simulation tables.
+
+The sixth migration, `20261118183151_AddSimulationJobRetries`, changes only `simulation_jobs`. It adds non-null integer `attempt_count` (default `0`) and `max_attempts` (default `3`), nullable `next_attempt_at_utc timestamp with time zone` (default `CURRENT_TIMESTAMP`), and nullable internal `last_failed_at_utc timestamp with time zone` and `last_failure_message character varying(1000)`. Its `Up` backfills attempts to `1` where a claim timestamp exists and `0` otherwise, sets existing maxima to `3`, assigns existing pending jobs their creation timestamp as eligibility time, and leaves non-pending eligibility and intermediate failure metadata null. It adds counter and paired-failure checks, replaces the lifecycle constraint, and replaces the pending-claim index with `ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id`. Its `Down` removes those five columns and the retry checks, restores the previous pending-claim index and lifecycle constraint, and does not alter the simulation tables or relationships. Rolling back removes retry history.
 
 | Column | PostgreSQL type | Purpose |
 |---|---|---|
@@ -1475,8 +1511,15 @@ The fifth migration, `20261019230251_AddSimulationJobLeases`, adds nullable `cla
 | `simulation_id` | `uuid`, nullable | Existing persisted simulation associated with a completed job; cleared if that simulation is deleted |
 | `finished_at_utc` | `timestamp with time zone`, nullable | Database-generated terminal transition timestamp |
 | `failure_message` | `character varying(1000)`, nullable | Bounded nonblank description for a failed job; callers must omit sensitive exception and database details |
+| `attempt_count` | `integer` | Attempts started; default `0`, incremented by claims |
+| `max_attempts` | `integer` | Persisted maximum from creation; database default `3` |
+| `next_attempt_at_utc` | `timestamp with time zone`, nullable | Stored pending-job eligibility time; initial default `CURRENT_TIMESTAMP` |
+| `last_failed_at_utc` | `timestamp with time zone`, nullable | Internal intermediate failure timestamp; absent from HTTP responses |
+| `last_failure_message` | `character varying(1000)`, nullable | Internal safe intermediate failure description; absent from HTTP responses |
 
-The fifteen-column job table enforces sample counts from 2 through 100,000; concentration exponents greater than 0 and less than 0.01; start times greater than or equal to 0; end times greater than the start time; singular times greater than the end time; and status values limited to `Pending`, `Running`, `Completed`, `Failed`, or `Cancelled`. The lifecycle constraint requires `Pending` jobs to have no claim, lease, or terminal metadata; `Running` jobs to have a claim timestamp, non-null token, and lease expiration later than the claim timestamp with no terminal metadata; successful terminal states clear token and lease metadata. `Completed` jobs have claim and finish timestamps and no failure description; `Failed` jobs have claim and finish timestamps, no simulation reference, and a nonblank failure description. A completed job's simulation reference may be `NULL` after the referenced simulation is deleted. The `Cancelled` status remains vocabulary only; this change does not implement cancellation behavior. The non-unique `ix_simulation_jobs_status_created_at_utc_id` index supports deterministic oldest-first claiming, `ix_simulation_jobs_status_lease_expires_at_utc_id` supports bounded recovery ordering, and `ix_simulation_jobs_simulation_id` supports lookup and referential actions. There remain no retry-attempt, progress, cancellation-request, or worker-identity columns.
+The twenty-column job table enforces sample counts from 2 through 100,000; concentration exponents greater than 0 and less than 0.01; start times greater than or equal to 0; end times greater than the start time; singular times greater than the end time; and status values limited to `Pending`, `Running`, `Completed`, `Failed`, or `Cancelled`. The lifecycle constraint requires `Pending` jobs to have no claim, lease, or terminal metadata; `Running` jobs to have a claim timestamp, non-null token, and lease expiration later than the claim timestamp with no terminal metadata; successful terminal states clear token and lease metadata. `Completed` jobs have claim and finish timestamps and no failure description; `Failed` jobs have claim and finish timestamps, no simulation reference, and a nonblank failure description. A completed job's simulation reference may be `NULL` after the referenced simulation is deleted. The `Cancelled` status remains vocabulary only; this change does not implement cancellation behavior. The retry checks enforce `0 <= attempt_count <= max_attempts` and `1 <= max_attempts <= 10`; pending jobs require an eligibility timestamp and attempts remaining, while running and terminal jobs have no eligibility timestamp. The non-unique `ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id` index supports deterministic eligibility-first claiming, `ix_simulation_jobs_status_lease_expires_at_utc_id` supports bounded recovery ordering, and `ix_simulation_jobs_simulation_id` supports lookup and referential actions. There remain no progress, cancellation-request, or worker-identity columns.
+
+The retry migration must be present before retry-aware API or worker persistence runs. Test validation and CI must target only the protected `singular_flow_tests` database; the development update command below is not a test-database command.
 
 For design-time inspection, specify Infrastructure as both the target and startup project:
 
@@ -1677,6 +1720,38 @@ SimulationJobs__Worker__RecoveryBatchSize
 
 For example, `SimulationJobs__Worker__Enabled=false` disables job consumption without changing the registered hosted service. These settings contain no credentials; database connectivity remains under `ConnectionStrings:SingularFlow`.
 
+### Retry configuration and behavior
+
+The API also binds `SimulationJobs:Retry` and validates it at host startup, even when the worker is disabled. Runtime defaults are:
+
+```json
+{
+  "SimulationJobs": {
+    "Retry": {
+      "MaxAttempts": 3,
+      "BaseDelay": "00:00:05",
+      "MaximumDelay": "00:05:00"
+    }
+  }
+}
+```
+
+| Setting | Default | Supported bounds |
+|---|---|---|
+| `MaxAttempts` | `3` | Integer from `1` through `10`, including the first attempt |
+| `BaseDelay` | `00:00:05` | Greater than zero and no greater than `MaximumDelay` |
+| `MaximumDelay` | `00:05:00` | At least `BaseDelay` and no greater than `00:05:00` |
+
+Overrides use `SimulationJobs__Retry__MaxAttempts`, `SimulationJobs__Retry__BaseDelay`, and `SimulationJobs__Retry__MaximumDelay`. `MaxAttempts` is assigned when the job is created and persisted with that job. The persisted maximum remains authoritative for claiming, retry scheduling, exhaustion, and recovery even if a later host configuration uses a different maximum. Delay settings come from the host's retry policy; they are not persisted per job.
+
+A successful claim increments `attemptCount` exactly once and starts an attempt. Failure recording and recovery do not increment it. The current Infrastructure classifier permits retries only for persistence-phase failures: a timeout, a transient Npgsql exception, or PostgreSQL SQLSTATE `40001`, `40P01`, `55P03`, `53300`, `57P01`, `57P02`, or `57P03`, including matches in the inner-exception chain. Any cancellation in that chain prevents retry classification. Calculation failures and unclassified failures are non-retryable and attempt a safe terminal failure transition; direct cancellation is not converted into failure or retry.
+
+For a classified retryable failure under current ownership, persistence compares the attempts started with the job's persisted maximum. If attempts remain, the job returns to the existing `Pending` status with `nextAttemptAtUtc` set from PostgreSQL time plus `min(MaximumDelay, BaseDelay * 2^(attemptCount - 1))`. Public claim and terminal fields are cleared, including `failureMessage`. With the default maximum, failure on attempt one schedules a five-second delay, failure on attempt two schedules ten seconds, and failure on attempt three exhausts the budget and becomes `Failed` with a safe failure description and no next eligibility time.
+
+The claim query requires a pending eligibility time at or before PostgreSQL's current time and attempts remaining. It skips locked rows and orders by eligibility time, creation time, and ID. Eligibility is an earliest claim time, not a start-time guarantee: worker availability, polling, locks, and other eligible jobs can delay execution. Scheduling a retry lets the worker continue looking for other eligible work; it does not sleep on that job until its timestamp.
+
+Bounded expired-lease recovery applies the same persisted budget and exponential delay. An expired `Running` job with attempts remaining becomes delayed `Pending`; an exhausted one becomes `Failed` with a safe expiration description. Recovery clears ownership, preserves the count of attempts already started, and never completes a simulation. Stale owners cannot schedule a retry or overwrite a newer owner. Automatic retry does not provide exactly-once processing, progress reporting, public cancellation, or a manual retry endpoint.
+
 ## Test
 
 The database integration tests require the dedicated `singular_flow_tests` database and reject a connection whose database name is not exactly `singular_flow_tests`. Create it only when it does not already exist:
@@ -1713,37 +1788,20 @@ dotnet test SingularFlow.slnx \
   --no-build
 ```
 
-The current lease-aware solution passed all 333 automated test cases with 0 failed and 0 skipped in each of three consecutive full Release solution runs using normal solution, project, and xUnit parallelism. No `-m:1`, solution serialization, xUnit parallelism override, or filtered fallback was used. All five monitored database counts returned to zero after every run.
+### Retry validation evidence and remaining release check
 
-| Project | Tests |
-| ------- | ----: |
-| Domain | 42 |
-| Application | 74 |
-| API | 133 |
-| Infrastructure | 84 |
-| Total | 333 |
+The earlier lease-only baseline passed three complete Release runs of 333 tests each (42 Domain, 74 Application, 133 API, and 84 Infrastructure), with 0 failed and 0 skipped per run. Those historical results do not validate the final retry tree.
 
-```text
-Run 1: 333 passed, 0 failed, 0 skipped
-Run 2: 333 passed, 0 failed, 0 skipped
-Run 3: 333 passed, 0 failed, 0 skipped
-```
+Recorded validation for the retry increment is separate:
 
-Current lease-aware Application and API coverage includes `SimulationJobLeaseHandlerTests`, `ProcessClaimedSimulationJobHandlerTests`, `SimulationJobLeaseSupervisorTests`, and `SimulationJobWorkerTests`. `ProcessClaimedSimulationJobHandlerTests` passed all 29 cases. The supervisor suite passed all 38 cases, including the 11 structural-invalid-claim cases that prove rejection before any scope, handler resolution, task, delay, processing, renewal, completion or failure repository activity, or logging; the database-free worker-related API selection passed all 76 cases. Coverage also includes lease claim, renewal and recovery delegation; exact stored-request and claim-token forwarding; valid claim contracts; `Completed` and `LeaseLost` results; fresh renewal scopes; heartbeat and cancellation boundaries; safe fenced failure attempts after calculation or finalization exceptions; and preservation of the original exception when failure recording also fails.
+* Protected persistence: three focused runs passed `8/8` each; one complete Infrastructure run passed `131/131`. The database audit returned zero rows and zero other active transactions after each valid run.
+* HTTP/OpenAPI selection: `25` passed.
+* Database-free job/worker regression selection: `124` passed.
+* Release build and whole-solution formatting passed after the API projection.
 
-The API tests cover valid `202 Accepted` submission, the `Location` header, the durable initial snapshot, the complete invalid HTTP request matrix, zero repository or lifecycle mutation for invalid requests, GET found/missing/empty/invalid UUID behavior, all five job statuses, both sampling modes, a completed job with a null simulation ID, unknown enum rejection in the mapper, OpenAPI job operations and response schemas, and worker-disabled endpoint isolation. Existing health, synchronous simulation, persistence, query, deletion, pagination, database lifecycle, and worker behavior remain covered. Controlled enabled-host tests use repository doubles, while shared-factory endpoint tests keep processing disabled.
+The HTTP/OpenAPI and job/worker selections may overlap; their counts must not be added together or presented as a complete solution total. These are recorded results from prior validation, not commands rerun during this documentation audit.
 
-Most Infrastructure tests inspect EF Core metadata and design-time provider configuration without connecting to PostgreSQL. Repository tests also reject null job-creation requests without database access. Job metadata tests verify nullable terminal columns, the 1,000-character failure-message limit, the lifecycle constraint, the optional simulation foreign key, `ON DELETE SET NULL`, and both job indexes. PostgreSQL repository tests verify simulation persistence plus job creation and retrieval, atomic claim behavior, successful `Running`-to-`Completed` and `Running`-to-`Failed` transitions, invalid and duplicate transition rejection, a missing-simulation foreign-key violation, database-generated terminal timestamps, completed-job retrieval, simulation deletion clearing only the job reference, transaction enlistment and rollback, connection-state preservation, and a concurrent completion/failure race with exactly one winner. Atomic job completion tests verify simulation and ordered-state persistence with job completion, rejection of non-`Running` jobs, rollback after a PostgreSQL child-state constraint violation, same-context tracker cleanup after rollback, caller-owned transaction/savepoint behavior, rejection of pre-existing tracked changes without flushing them, cancellation, and input validation. Multi-connection tests clean up only their exact seeded job IDs. The job-creation integration test uses `RepeatableRead` so unrelated default-parallel API database activity cannot change its before/after count snapshot; production behavior and test parallelism are unchanged. The test-database guard requires `singular_flow_tests`.
-
-Lease-aware Infrastructure coverage includes `EfSimulationJobLeaseRepositoryTests`, `EfSimulationJobLeaseTerminalRepositoryTests`, and `EfSimulationJobLeaseCompletionRepositoryTests`. Protected PostgreSQL validation passed the retained repository selection with 3 passed; the migrated completion selection with 11 passed in each of three runs; the dedicated lease selection with 40 passed; lease/entity/terminal metadata with 14 passed; and the complete Infrastructure project with 84 passed in each of three consecutive runs. Every protected command had 0 failed and 0 skipped, and table counts returned to baseline after every run.
-
-Final post-correction runtime scenario A validated normal lease-aware execution against only the protected `singular_flow_tests` database outside Compose. Readiness returned `200`; job POST returned `202 Accepted` with the correct `Location` and an initial `pending` snapshot; the valid claim passed centralized structural validation and completed; job GET returned `completed` with claim and finish timestamps, a null failure, no public ownership fields, and `Cache-Control: no-store`; simulation GET returned `200` with exactly five ordered states and strictly ascending times; completion had cleared token and lease metadata; and exact-ID cleanup restored all five monitored counts to zero.
-
-Final post-correction runtime scenario B validated recovery, reclaim, and heartbeat against the same protected database. One expired `Running` job was recovered to `Pending` with ownership and terminal metadata cleared, then reclaimed with a new nonempty token different from the seed token; the valid reclaimed claim passed centralized structural validation. While processing persistence was intentionally blocked, heartbeat renewals extended the lease without changing that token, the job remained `Running`, and active ownership prevented a second recovery. Controlled release allowed fenced completion; token and lease metadata were cleared; job GET returned `completed` with `Cache-Control: no-store`; simulation GET returned five ascending states; exact-ID cleanup restored all five monitored counts to zero; and no smoke-related transaction remained.
-
-Observed worker logging in the final runtime scenarios recorded one startup and one stopping message per API process, one completion message with job and simulation IDs, and a recovery count of one. No claim-token value or structured claim-token property was logged; EF informational SQL did mention the `claim_token` column name without exposing a token value. Expected shutdown cancellation was not logged as an error, and the final runs had no unexpected lease-loss message, processing or recovery error loop, repeated claim failure, or fencing rejection. This is runtime observation, not a broader security audit.
-
-Formatting verification passed without repository changes, the Release build completed with 0 warnings and 0 errors, and the EF pending-model check reported `No changes have been made to the model since the last migration.` The five expected migrations were applied to the protected test schema; PostgreSQL remained running and healthy, the Compose API service remained stopped, cleanup restored all five monitored counts to zero, and repository hashes were unchanged throughout validation. The complete solution, normal runtime execution, expired-lease recovery, reclaim, and active heartbeat renewal are fully validated; the final read-only audit remains separate.
+The full solution test run on the final tree remains pending: `dotnet test SingularFlow.slnx --configuration Release --no-build`, with verified protected access to `singular_flow_tests` and post-run database cleanup/audit. Release readiness is not complete until that run succeeds. This documentation audit does not run database tests or apply migrations.
 
 ## Code formatting
 
@@ -1774,8 +1832,11 @@ The workflow performs the following steps:
 5. Restore the solution.
 6. Verify code formatting.
 7. Build the solution in Release mode.
-8. Build the API Docker image from the root `Dockerfile` as `singular-flow-api:ci`.
-9. Run all automated tests with `SINGULARFLOW_TEST_CONNECTION_STRING` configured from the service's assigned host port.
+8. Restore the local .NET tools and apply all pending migrations to the dedicated `singular_flow_tests` service database using Infrastructure as both target and startup project, in Release mode with `--no-build` and the explicit protected test connection.
+9. Build the API Docker image from the root `Dockerfile` as `singular-flow-api:ci`.
+10. Run all automated tests with `SINGULARFLOW_TEST_CONNECTION_STRING` configured from the service's assigned host port.
+
+The migration step includes `20261118183151_AddSimulationJobRetries` when present in the checked-out source, before the full Release test command. Read-only workflow inspection found no retry-specific database-provisioning, migration, build, or test-selection mismatch. This audit did not trigger CI or establish a passing CI result.
 
 The temporary PostgreSQL service is used by the persistence and database-readiness integration tests. The Docker build step validates that the Dockerfile continues to build successfully. CI does not start the local Compose stack, run tests inside the API image, publish the image to a registry, or deploy the application.
 
@@ -1895,7 +1956,7 @@ The project is developed incrementally.
 * [x] Add a nullable database-generated claim timestamp.
 * [x] Add the Application claim handler and repository contract.
 * [x] Add repository-level atomic pending-job selection and claiming.
-* [x] Add deterministic oldest-first creation-time and UUID ordering.
+* [x] Add deterministic eligibility-time, creation-time, and UUID claim ordering.
 * [x] Add `FOR UPDATE SKIP LOCKED` concurrency protection.
 * [x] Add PostgreSQL claim and concurrency tests.
 * [x] Persist conditional `Running`-to-`Completed` and `Running`-to-`Failed` transitions.
@@ -1923,12 +1984,13 @@ The project is developed incrementally.
 * [ ] Add public job listing.
 * [ ] Report execution progress.
 * [ ] Add public cancellation-request behavior.
-* [ ] Add retry behavior and attempt counters.
+* [x] Add bounded automatic retry behavior, persisted attempt counters, and public retry-state fields.
+* [ ] Complete the full solution Release test run on the final retry tree.
 * [x] Add ownership through claim tokens and lease expiration.
 * [x] Add lease renewal through worker heartbeats.
-* [x] Add bounded expired-lease recovery from `Running` to `Pending`.
+* [x] Add bounded expired-lease recovery to delayed `Pending` or exhausted `Failed`.
 * [x] Fence completion and failure with the current claim token and lease.
-* [x] Process acquired claims through lease-aware `Completed` and `LeaseLost` results.
+* [x] Process acquired claims through `Completed`, `LeaseLost`, `RetryScheduled`, and exhausted `Failed` results.
 * [x] Integrate lease-aware claiming, supervision, recovery, and fresh renewal scopes into the hosted worker.
 * [x] Persist simulation output and completion atomically under current ownership.
 * [x] Validate expired-job recovery and safe reclaim with a new token at runtime.

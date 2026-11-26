@@ -50,7 +50,9 @@ public sealed class SimulationRequestValidatorTests
     {
         RunSimulationHandler simulationHandler = new();
         RecordingSimulationJobRepository repository = new(request);
-        CreateSimulationJobHandler creationHandler = new(repository);
+        CreateSimulationJobHandler creationHandler = new(
+            repository,
+            SimulationJobRetryPolicy.Default);
 
         ArgumentOutOfRangeException synchronousException =
             Assert.Throws<ArgumentOutOfRangeException>(
@@ -76,7 +78,9 @@ public sealed class SimulationRequestValidatorTests
         RunSimulationHandler simulationHandler = new();
         RunSimulationRequest request = CreateRequest();
         RecordingSimulationJobRepository repository = new(request);
-        CreateSimulationJobHandler creationHandler = new(repository);
+        CreateSimulationJobHandler creationHandler = new(
+            repository,
+            SimulationJobRetryPolicy.Default);
 
         ArgumentNullException synchronousException =
             Assert.Throws<ArgumentNullException>(
@@ -107,7 +111,9 @@ public sealed class SimulationRequestValidatorTests
             sampleCount: sampleCount);
 
         RecordingSimulationJobRepository repository = new(request);
-        CreateSimulationJobHandler handler = new(repository);
+        CreateSimulationJobHandler handler = new(
+            repository,
+            SimulationJobRetryPolicy.Default);
 
         SimulationJobResult result = await handler.HandleAsync(
             request,
@@ -160,6 +166,7 @@ public sealed class SimulationRequestValidatorTests
 
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,
+            int maxAttempts,
             CancellationToken cancellationToken)
         {
             InvocationCount++;

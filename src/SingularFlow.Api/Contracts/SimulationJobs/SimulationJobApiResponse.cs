@@ -10,4 +10,7 @@ public sealed record SimulationJobApiResponse(
     DateTimeOffset? ClaimedAtUtc,
     DateTimeOffset? FinishedAtUtc,
     Guid? SimulationId,
-    string? FailureMessage);
+    string? FailureMessage,
+    int AttemptCount,
+    int MaxAttempts,
+    DateTimeOffset? NextAttemptAtUtc);

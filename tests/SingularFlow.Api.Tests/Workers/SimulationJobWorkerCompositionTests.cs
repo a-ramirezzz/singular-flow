@@ -45,6 +45,17 @@ public sealed class SimulationJobWorkerCompositionTests
                     AssertScoped<RenewSimulationJobLeaseHandler>(services);
                     AssertScoped<RecoverExpiredSimulationJobsHandler>(services);
                     AssertScoped<ProcessClaimedSimulationJobHandler>(services);
+                    AssertSingletonFactory<SimulationJobRetryPolicy>(services);
+                    AssertImplementation(
+                        services,
+                        typeof(ISimulationJobFailureClassifier),
+                        "SingularFlow.Infrastructure.Persistence.EfSimulationJobFailureClassifier",
+                        ServiceLifetime.Singleton);
+                    AssertImplementation(
+                        services,
+                        typeof(ISimulationJobRetryRepository),
+                        "SingularFlow.Infrastructure.Persistence.EfSimulationJobRetryRepository",
+                        ServiceLifetime.Scoped);
                     Type[] registeredJobHandlers = services
                         .Where(descriptor =>
                             descriptor.ServiceType.Namespace ==
@@ -83,14 +94,20 @@ public sealed class SimulationJobWorkerCompositionTests
                     Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(EfSimulationJobRepository));
                     Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(EfSimulationJobCompletionRepository));
                     Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(EfSimulationJobLeaseRepository));
+                    Assert.DoesNotContain(
+                        services,
+                        descriptor => descriptor.ServiceType.FullName ==
+                            "SingularFlow.Infrastructure.Persistence.EfSimulationJobRetryRepository");
 
                     services.RemoveAll<ISimulationJobRepository>();
                     services.RemoveAll<ISimulationJobCompletionRepository>();
                     services.RemoveAll<ISimulationJobLeaseRepository>();
+                    services.RemoveAll<ISimulationJobRetryRepository>();
                     services.AddSingleton(probe);
                     services.AddScoped<ISimulationJobRepository, ControlledSimulationJobRepository>();
                     services.AddScoped<ISimulationJobCompletionRepository, ControlledSimulationJobCompletionRepository>();
                     services.AddScoped<ISimulationJobLeaseRepository, ControlledSimulationJobLeaseRepository>();
+                    services.AddScoped<ISimulationJobRetryRepository, ControlledSimulationJobRetryRepository>();
                 });
             });
 
@@ -110,6 +127,17 @@ public sealed class SimulationJobWorkerCompositionTests
         AssertScopedIdentity<RenewSimulationJobLeaseHandler>(first, second);
         AssertScopedIdentity<RecoverExpiredSimulationJobsHandler>(first, second);
         AssertScopedIdentity<ProcessClaimedSimulationJobHandler>(first, second);
+        SimulationJobRetryPolicy policy = root.GetRequiredService<SimulationJobRetryPolicy>();
+        Assert.Equal(3, policy.MaxAttempts);
+        Assert.Equal(TimeSpan.FromSeconds(5), policy.BaseDelay);
+        Assert.Equal(TimeSpan.FromMinutes(5), policy.MaximumDelay);
+        Assert.Same(policy, first.GetRequiredService<SimulationJobRetryPolicy>());
+        Assert.Same(policy, second.GetRequiredService<SimulationJobRetryPolicy>());
+        ISimulationJobFailureClassifier classifier = root.GetRequiredService<ISimulationJobFailureClassifier>();
+        Assert.Same(classifier, first.GetRequiredService<ISimulationJobFailureClassifier>());
+        Assert.Same(classifier, second.GetRequiredService<ISimulationJobFailureClassifier>());
+        AssertScopedIdentity<ISimulationJobRetryRepository>(first, second);
+        AssertScopedIdentity<ISimulationJobLeaseRepository>(first, second);
         Assert.IsType<ControlledSimulationJobRepository>(first.GetRequiredService<ISimulationJobRepository>());
         Assert.IsType<ControlledSimulationJobCompletionRepository>(first.GetRequiredService<ISimulationJobCompletionRepository>());
         Assert.IsType<ControlledSimulationJobLeaseRepository>(first.GetRequiredService<ISimulationJobLeaseRepository>());
@@ -188,6 +216,41 @@ public sealed class SimulationJobWorkerCompositionTests
             item => item.ServiceType == typeof(TService));
         Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
         Assert.Equal(typeof(TImplementation), descriptor.ImplementationType);
+    }
+
+    private static void AssertSingletonFactory<TService>(
+        IServiceCollection services)
+    {
+        ServiceDescriptor descriptor = Assert.Single(
+            services,
+            item => item.ServiceType == typeof(TService));
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+        Assert.NotNull(descriptor.ImplementationFactory);
+    }
+
+    private static void AssertSingletonInstance<TService>(
+        IServiceCollection services,
+        TService expected)
+        where TService : class
+    {
+        ServiceDescriptor descriptor = Assert.Single(
+            services,
+            item => item.ServiceType == typeof(TService));
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+        Assert.Same(expected, descriptor.ImplementationInstance);
+    }
+
+    private static void AssertImplementation(
+        IServiceCollection services,
+        Type serviceType,
+        string implementationTypeName,
+        ServiceLifetime lifetime)
+    {
+        ServiceDescriptor descriptor = Assert.Single(
+            services,
+            item => item.ServiceType == serviceType);
+        Assert.Equal(lifetime, descriptor.Lifetime);
+        Assert.Equal(implementationTypeName, descriptor.ImplementationType?.FullName);
     }
 
     private static void AssertScopedIdentity<TService>(IServiceProvider first, IServiceProvider second)

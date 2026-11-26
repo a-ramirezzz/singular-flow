@@ -5,11 +5,16 @@ namespace SingularFlow.Application.SimulationJobs;
 public sealed class CreateSimulationJobHandler
 {
     private readonly ISimulationJobRepository _repository;
+    private readonly SimulationJobRetryPolicy _retryPolicy;
 
     public CreateSimulationJobHandler(
-        ISimulationJobRepository repository)
+        ISimulationJobRepository repository,
+        SimulationJobRetryPolicy retryPolicy)
     {
-        _repository = repository;
+        _repository = repository ??
+            throw new ArgumentNullException(nameof(repository));
+        _retryPolicy = retryPolicy ??
+            throw new ArgumentNullException(nameof(retryPolicy));
     }
 
     public Task<SimulationJobResult> HandleAsync(
@@ -20,6 +25,7 @@ public sealed class CreateSimulationJobHandler
 
         return _repository.CreateAsync(
             request,
+            _retryPolicy.MaxAttempts,
             cancellationToken);
     }
 }

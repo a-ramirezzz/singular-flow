@@ -43,7 +43,7 @@ public sealed class SimulationJobLeaseConfigurationTests
     }
 
     [Fact]
-    public void Model_ConfiguresRecoveryIndexAndPreservesPendingIndex()
+    public void Model_ConfiguresRecoveryIndexAndPreservesRetryPendingIndex()
     {
         using SingularFlowDbContext context = CreateContext();
         IEntityType entityType = GetJobEntityType(context.Model);
@@ -56,8 +56,9 @@ public sealed class SimulationJobLeaseConfigurationTests
             nameof(SimulationJobEntity.Id));
         AssertIndex(
             entityType,
-            "ix_simulation_jobs_status_created_at_utc_id",
+            "ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id",
             nameof(SimulationJobEntity.Status),
+            nameof(SimulationJobEntity.NextAttemptAtUtc),
             nameof(SimulationJobEntity.CreatedAtUtc),
             nameof(SimulationJobEntity.Id));
     }

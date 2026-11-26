@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -14,6 +15,7 @@ public sealed class SimulationJobEndpointFactory :
     private readonly ControlledSimulationJobRepository _repository =
         new();
 
+    public int? ReceivedMaxAttempts => _repository.ReceivedMaxAttempts;
     public int CreateCount => _repository.CreateCount;
     public int GetCount => _repository.GetCount;
     public int ClaimCount => _repository.ClaimCount;
@@ -42,6 +44,13 @@ public sealed class SimulationJobEndpointFactory :
     {
         base.ConfigureWebHost(builder);
 
+        builder.ConfigureAppConfiguration((_, configuration) =>
+            configuration.AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["SimulationJobs:Retry:MaxAttempts"] = "3"
+                }));
+
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<ISimulationJobRepository>();
@@ -62,6 +71,7 @@ public sealed class SimulationJobEndpointFactory :
             new();
         private SimulationJobResult? _createResult;
 
+        public int? ReceivedMaxAttempts { get; private set; }
         public int CreateCount { get; private set; }
         public int GetCount { get; private set; }
         public int ClaimCount { get; private set; }
@@ -82,6 +92,7 @@ public sealed class SimulationJobEndpointFactory :
             CompleteCount = 0;
             FailCount = 0;
             ReceivedCreateRequest = null;
+            ReceivedMaxAttempts = null;
             _receivedIds.Clear();
             _receivedCreateTokens.Clear();
             _receivedGetTokens.Clear();
@@ -102,15 +113,22 @@ public sealed class SimulationJobEndpointFactory :
 
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,
+            int maxAttempts,
             CancellationToken cancellationToken)
         {
             CreateCount++;
             ReceivedCreateRequest = request;
+            ReceivedMaxAttempts = maxAttempts;
             _receivedCreateTokens.Add(cancellationToken);
 
-            return Task.FromResult(
+            SimulationJobResult result =
                 _createResult ?? throw new InvalidOperationException(
-                    "A creation result must be configured."));
+                    "A creation result must be configured.");
+
+            return Task.FromResult(result with
+            {
+                MaxAttempts = maxAttempts
+            });
         }
 
         public Task<SimulationJobResult?> GetByIdAsync(

@@ -21,8 +21,8 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         Guid token = Guid.NewGuid();
         SimulationEntity simulation = CreateSimulation();
         SimulationJobEntity job = CreateRunningJob(token);
-        context.AddRange(simulation, job);
-        await context.SaveChangesAsync();
+        context.Add(simulation);
+        await SeedJobAsync(context, job);
         await SetLeaseAsync(context, job.Id, expired: false);
         context.ChangeTracker.Clear();
 
@@ -51,8 +51,7 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         await using var transaction = await context.Database.BeginTransactionAsync();
         Guid token = Guid.NewGuid();
         SimulationJobEntity job = CreateRunningJob(token);
-        context.Add(job);
-        await context.SaveChangesAsync();
+        await SeedJobAsync(context, job);
         await SetLeaseAsync(context, job.Id, expired: false);
         context.ChangeTracker.Clear();
 
@@ -101,13 +100,23 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
             _ => SimulationJobStatus.Running
         };
         SimulationJobEntity job = CreateJob(token, status);
-        context.AddRange(simulation, job);
+        SimulationJobEntity? otherJob = null;
+        context.Add(simulation);
+        await SeedJobAsync(context, job);
         if (scenario == "other-job-token")
         {
-            context.Add(CreateRunningJob(Guid.NewGuid()));
-        }
+            Guid otherToken;
+            do
+            {
+                otherToken = Guid.NewGuid();
+            }
+            while (otherToken == token || otherToken == Guid.Empty);
 
-        await context.SaveChangesAsync();
+            otherJob = CreateRunningJob(otherToken);
+            Assert.NotEqual(job.Id, otherJob.Id);
+            await SeedJobAsync(context, otherJob);
+            await SetLeaseAsync(context, otherJob.Id, expired: false);
+        }
         if (status == SimulationJobStatus.Running)
         {
             await SetLeaseAsync(
@@ -118,14 +127,33 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
 
         context.ChangeTracker.Clear();
         SimulationJobEntity before = await ReadJobAsync(context, job.Id);
+        SimulationJobEntity? otherBefore = null;
+        if (otherJob is not null)
+        {
+            otherBefore = await ReadJobAsync(context, otherJob.Id);
+            Assert.Equal(SimulationJobStatus.Running, otherBefore.Status);
+            Assert.NotNull(otherBefore.ClaimedAtUtc);
+            Assert.True(otherBefore.ClaimToken.HasValue);
+            Assert.NotEqual(Guid.Empty, otherBefore.ClaimToken.Value);
+            Assert.NotEqual(token, otherBefore.ClaimToken.Value);
+            Assert.NotNull(otherBefore.LeaseExpiresAtUtc);
+            Assert.True(
+                otherBefore.LeaseExpiresAtUtc > otherBefore.ClaimedAtUtc);
+            Assert.InRange(
+                otherBefore.AttemptCount,
+                1,
+                otherBefore.MaxAttempts);
+            Assert.Null(otherBefore.NextAttemptAtUtc);
+            Assert.Null(otherBefore.SimulationId);
+            Assert.Null(otherBefore.FinishedAtUtc);
+            Assert.Null(otherBefore.FailureMessage);
+        }
+
         Guid suppliedToken = scenario switch
         {
             "wrong-complete" or "wrong-fail" => Guid.NewGuid(),
             "empty-complete" or "empty-fail" => Guid.Empty,
-            "other-job-token" => await context.SimulationJobs
-                .Where(item => item.Id != job.Id)
-                .Select(item => item.ClaimToken!.Value)
-                .SingleAsync(),
+            "other-job-token" => otherBefore!.ClaimToken!.Value,
             _ => token
         };
         Guid requestedJobId = scenario == "missing" ? Guid.NewGuid() : job.Id;
@@ -153,6 +181,34 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         Assert.Equal(before.FailureMessage, after.FailureMessage);
         Assert.Equal(before.ClaimToken, after.ClaimToken);
         Assert.Equal(before.LeaseExpiresAtUtc, after.LeaseExpiresAtUtc);
+        Assert.Equal(before.ClaimedAtUtc, after.ClaimedAtUtc);
+        Assert.Equal(before.AttemptCount, after.AttemptCount);
+        Assert.Equal(before.MaxAttempts, after.MaxAttempts);
+        Assert.Equal(before.NextAttemptAtUtc, after.NextAttemptAtUtc);
+        Assert.Equal(before.LastFailedAtUtc, after.LastFailedAtUtc);
+        Assert.Equal(before.LastFailureMessage, after.LastFailureMessage);
+        if (otherJob is not null && otherBefore is not null)
+        {
+            SimulationJobEntity otherAfter = await ReadJobAsync(
+                context,
+                otherJob.Id);
+            Assert.Equal(otherBefore.Status, otherAfter.Status);
+            Assert.Equal(otherBefore.SimulationId, otherAfter.SimulationId);
+            Assert.Equal(otherBefore.FinishedAtUtc, otherAfter.FinishedAtUtc);
+            Assert.Equal(otherBefore.FailureMessage, otherAfter.FailureMessage);
+            Assert.Equal(otherBefore.ClaimedAtUtc, otherAfter.ClaimedAtUtc);
+            Assert.Equal(otherBefore.ClaimToken, otherAfter.ClaimToken);
+            Assert.Equal(
+                otherBefore.LeaseExpiresAtUtc,
+                otherAfter.LeaseExpiresAtUtc);
+            Assert.Equal(otherBefore.AttemptCount, otherAfter.AttemptCount);
+            Assert.Equal(otherBefore.MaxAttempts, otherAfter.MaxAttempts);
+            Assert.Equal(otherBefore.NextAttemptAtUtc, otherAfter.NextAttemptAtUtc);
+            Assert.Equal(otherBefore.LastFailedAtUtc, otherAfter.LastFailedAtUtc);
+            Assert.Equal(
+                otherBefore.LastFailureMessage,
+                otherAfter.LastFailureMessage);
+        }
         await transaction.RollbackAsync();
     }
 
@@ -165,8 +221,8 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         Guid token = Guid.NewGuid();
         SimulationEntity simulation = CreateSimulation();
         SimulationJobEntity job = CreateRunningJob(token);
-        context.AddRange(simulation, job);
-        await context.SaveChangesAsync();
+        context.Add(simulation);
+        await SeedJobAsync(context, job);
         await SetLeaseAsync(context, job.Id, expired: false);
         context.ChangeTracker.Clear();
 
@@ -184,13 +240,16 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         await using var transaction = await context.Database.BeginTransactionAsync();
         Guid ownerA = Guid.NewGuid();
         SimulationJobEntity job = CreateRunningJob(ownerA);
-        context.Add(job);
-        await context.SaveChangesAsync();
+        await SeedJobAsync(context, job);
         await SetLeaseAsync(context, job.Id, expired: true);
         context.ChangeTracker.Clear();
-        EfSimulationJobLeaseRepository leases = new(context);
+        EfSimulationJobLeaseRepository leases =
+            new(context, SimulationJobRetryPolicy.Default);
 
         Assert.Contains(job.Id, await leases.RecoverExpiredAsync(1, default));
+        await context.Database.ExecuteSqlRawAsync(
+            "UPDATE simulation_jobs SET next_attempt_at_utc = CURRENT_TIMESTAMP WHERE id = {0}",
+            job.Id);
         SimulationJobClaim ownerB = Assert.IsType<SimulationJobClaim>(
             await leases.ClaimNextPendingAsync(TimeSpan.FromMinutes(1), default));
         Assert.NotEqual(Guid.Empty, ownerB.ClaimToken);
@@ -221,8 +280,8 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         SimulationJobEntity job = CreateRunningJob(token);
         await using (SingularFlowDbContext seed = new(options))
         {
-            seed.AddRange(simulation, job);
-            await seed.SaveChangesAsync();
+            seed.Add(simulation);
+            await SeedJobAsync(seed, job);
             await SetLeaseAsync(seed, job.Id, expired: false);
         }
 
@@ -310,6 +369,46 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
     private static SimulationJobEntity CreateRunningJob(Guid token) =>
         CreateJob(token, SimulationJobStatus.Running);
 
+    private static async Task SeedJobAsync(
+        SingularFlowDbContext context,
+        SimulationJobEntity job)
+    {
+        context.Add(new SimulationJobEntity
+        {
+            Id = job.Id,
+            SingularTime = job.SingularTime,
+            ConcentrationExponent = job.ConcentrationExponent,
+            StartTime = job.StartTime,
+            EndTime = job.EndTime,
+            SampleCount = job.SampleCount,
+            SamplingMode = job.SamplingMode,
+            Status = SimulationJobStatus.Pending,
+            CreatedAtUtc = job.CreatedAtUtc,
+            MaxAttempts = job.MaxAttempts
+        });
+        await context.SaveChangesAsync();
+
+        if (job.Status == SimulationJobStatus.Pending)
+        {
+            return;
+        }
+
+        int affectedRows = await context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE simulation_jobs
+            SET status = {job.Status.ToString()},
+                claimed_at_utc = {job.ClaimedAtUtc},
+                claim_token = {job.ClaimToken},
+                lease_expires_at_utc = {job.LeaseExpiresAtUtc},
+                attempt_count = {job.AttemptCount},
+                max_attempts = {job.MaxAttempts},
+                next_attempt_at_utc = NULL,
+                finished_at_utc = {job.FinishedAtUtc},
+                failure_message = {job.FailureMessage}
+            WHERE id = {job.Id}
+            """);
+        Assert.Equal(1, affectedRows);
+    }
+
     private static SimulationJobEntity CreateJob(
         Guid token,
         SimulationJobStatus status)
@@ -335,6 +434,8 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
                 : timestamp,
             ClaimToken = running ? token : null,
             LeaseExpiresAtUtc = running ? timestamp.AddYears(2) : null,
+            AttemptCount = status == SimulationJobStatus.Pending ? 0 : 1,
+            MaxAttempts = SimulationJobRetryPolicy.Default.MaxAttempts,
             FinishedAtUtc = terminal ? timestamp.AddSeconds(1) : null,
             FailureMessage = status == SimulationJobStatus.Failed
                 ? "Seeded failure"
@@ -353,15 +454,18 @@ public sealed class EfSimulationJobLeaseTerminalRepositoryTests
         SamplingMode = SamplingMode.Uniform
     };
 
-    private static Task SetLeaseAsync(
+    private static async Task SetLeaseAsync(
         SingularFlowDbContext context,
         Guid id,
-        bool expired) =>
-        context.Database.ExecuteSqlRawAsync(
+        bool expired)
+    {
+        int affectedRows = await context.Database.ExecuteSqlRawAsync(
             expired
                 ? "UPDATE simulation_jobs SET lease_expires_at_utc = CURRENT_TIMESTAMP - interval '1 second' WHERE id = {0}"
                 : "UPDATE simulation_jobs SET lease_expires_at_utc = CURRENT_TIMESTAMP + interval '1 minute' WHERE id = {0}",
             id);
+        Assert.Equal(1, affectedRows);
+    }
 
     private static Task<SimulationJobEntity> ReadJobAsync(
         SingularFlowDbContext context,

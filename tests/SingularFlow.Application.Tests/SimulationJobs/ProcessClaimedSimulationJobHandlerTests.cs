@@ -264,14 +264,24 @@ public sealed class ProcessClaimedSimulationJobHandlerTests
 
     private static ProcessClaimedSimulationJobHandler CreateHandler(
         RecordingJobRepository jobs, RecordingCompletionRepository completion) =>
-        new(new RunSimulationHandler(), completion, new FailSimulationJobHandler(jobs));
+        new(
+            new RunSimulationHandler(),
+            completion,
+            new FailSimulationJobHandler(jobs),
+            new NonRetryableFailureClassifier(),
+            new RejectingRetryRepository(),
+            SimulationJobRetryPolicy.Default);
 
     private static RunSimulationRequest CreateRequest(SamplingMode mode = SamplingMode.Uniform) =>
         new(2.75, 0.004, 0.25, 1.75, 4, mode);
 
     private static SimulationJobClaim CreateClaim(RunSimulationRequest? request = null) =>
         new(new SimulationJobResult(JobId, request ?? CreateRequest(), SimulationJobStatus.Running,
-            ClaimedAt.AddMinutes(-1), ClaimedAt, null, null, null),
+            ClaimedAt.AddMinutes(-1), ClaimedAt, null, null, null)
+        {
+            AttemptCount = 1,
+            MaxAttempts = 3
+        },
             ClaimToken, ClaimedAt.AddMinutes(5));
 
     private static SimulationJobResult CreateCompletedJob() =>
@@ -311,8 +321,31 @@ public sealed class ProcessClaimedSimulationJobHandlerTests
             FencedFailureCount++; JobId = jobId; ClaimToken = claimToken; Message = failureMessage; Token = cancellationToken;
             return FailureException is null ? Task.FromResult(FailureResult) : Task.FromException<SimulationJobResult?>(FailureException);
         }
-        public Task<SimulationJobResult> CreateAsync(RunSimulationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<SimulationJobResult> CreateAsync(RunSimulationRequest request, int maxAttempts, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> GetByIdAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> TryCompleteAsync(Guid jobId, Guid claimToken, Guid simulationId, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class NonRetryableFailureClassifier :
+        ISimulationJobFailureClassifier
+    {
+        public SimulationJobFailureClassification Classify(
+            Exception exception,
+            SimulationJobFailurePhase phase) =>
+            SimulationJobFailureClassification.NonRetryable;
+    }
+
+    private sealed class RejectingRetryRepository :
+        ISimulationJobRetryRepository
+    {
+        public Task<SimulationJobRetryDecision?>
+            TryRecordRetryableFailureAsync(
+                Guid jobId,
+                Guid claimToken,
+                string safeFailureMessage,
+                TimeSpan retryDelay,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "Retry recording was not expected.");
     }
 }

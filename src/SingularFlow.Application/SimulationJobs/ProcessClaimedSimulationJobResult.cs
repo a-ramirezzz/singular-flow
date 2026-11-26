@@ -12,4 +12,11 @@ public abstract record ProcessClaimedSimulationJobResult
 
     public sealed record LeaseLost(
         Guid JobId) : ProcessClaimedSimulationJobResult;
+
+    public sealed record RetryScheduled(
+        Guid JobId,
+        DateTimeOffset NextAttemptAtUtc) : ProcessClaimedSimulationJobResult;
+
+    public sealed record Failed(
+        Guid JobId) : ProcessClaimedSimulationJobResult;
 }

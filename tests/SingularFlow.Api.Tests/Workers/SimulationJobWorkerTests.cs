@@ -137,6 +137,68 @@ public sealed class SimulationJobWorkerTests
     }
 
     [Fact]
+    public async Task RetryScheduled_LogsSafeIdentifiersAndClaimsAgainWithoutDelay()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid claimToken = Guid.NewGuid();
+        DateTimeOffset nextAttemptAtUtc = new(2026, 11, 19, 12, 34, 56, TimeSpan.Zero);
+        WorkerHarness harness = new();
+        harness.Leases.BlockSecondClaim = true;
+        harness.Leases.Claims.Enqueue(CreateClaim(jobId, claimToken));
+        harness.Completion.Exception = new IOException("provider failure detail");
+        harness.Retries.Decision = new SimulationJobRetryDecision.Scheduled(
+            CreateRetryJob(jobId, nextAttemptAtUtc, exhausted: false));
+
+        await harness.Worker.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => harness.Leases.ClaimCount >= 2);
+
+        LogEntry information = Assert.Single(
+            harness.Logger.Entries,
+            entry => entry.Level == LogLevel.Information &&
+                entry.Properties.ContainsKey("NextAttemptAtUtc"));
+        Assert.Equal(jobId, information.Properties["JobId"]);
+        Assert.Equal(nextAttemptAtUtc, information.Properties["NextAttemptAtUtc"]);
+        Assert.DoesNotContain(claimToken.ToString(), Render(information), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("provider failure detail", Render(information), StringComparison.Ordinal);
+        Assert.DoesNotContain(harness.Delay.Requests, request =>
+            request.Duration == PollingInterval || request.Duration == FailureDelay);
+
+        await harness.Worker.StopAsync(CancellationToken.None);
+        await harness.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Failed_LogsRetryExhaustionAndClaimsAgainWithoutDelay()
+    {
+        Guid jobId = Guid.NewGuid();
+        Guid claimToken = Guid.NewGuid();
+        WorkerHarness harness = new();
+        harness.Leases.BlockSecondClaim = true;
+        harness.Leases.Claims.Enqueue(CreateClaim(jobId, claimToken, attemptCount: 3));
+        harness.Completion.Exception = new IOException("SQL provider secret");
+        harness.Retries.Decision = new SimulationJobRetryDecision.Exhausted(
+            CreateRetryJob(jobId, nextAttemptAtUtc: null, exhausted: true));
+
+        await harness.Worker.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => harness.Leases.ClaimCount >= 2);
+
+        LogEntry warning = Assert.Single(
+            harness.Logger.Entries,
+            entry => entry.Level == LogLevel.Warning &&
+                entry.Properties.ContainsKey("JobId"));
+        Assert.Equal(jobId, warning.Properties["JobId"]);
+        Assert.Contains("exhausted", warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(claimToken.ToString(), Render(warning), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SQL provider secret", Render(warning), StringComparison.Ordinal);
+        Assert.Null(warning.Exception);
+        Assert.DoesNotContain(harness.Delay.Requests, request =>
+            request.Duration == PollingInterval || request.Duration == FailureDelay);
+
+        await harness.Worker.StopAsync(CancellationToken.None);
+        await harness.DisposeAsync();
+    }
+
+    [Fact]
     public async Task ClaimFailure_LogsErrorAndUsesFailureDelay()
     {
         InvalidOperationException failure = new("claim failed");
@@ -210,7 +272,10 @@ public sealed class SimulationJobWorkerTests
         Assert.Contains("null", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static SimulationJobClaim CreateClaim(Guid jobId, Guid claimToken)
+    private static SimulationJobClaim CreateClaim(
+        Guid jobId,
+        Guid claimToken,
+        int attemptCount = 1)
     {
         DateTimeOffset claimedAt = new(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
         SimulationJobResult job = new(
@@ -221,8 +286,36 @@ public sealed class SimulationJobWorkerTests
             claimedAt,
             null,
             null,
-            null);
+            null)
+        {
+            AttemptCount = attemptCount,
+            MaxAttempts = SimulationJobRetryPolicy.Default.MaxAttempts
+        };
         return new SimulationJobClaim(job, claimToken, claimedAt + LeaseDuration);
+    }
+
+    private static SimulationJobResult CreateRetryJob(
+        Guid jobId,
+        DateTimeOffset? nextAttemptAtUtc,
+        bool exhausted)
+    {
+        DateTimeOffset failedAtUtc = new(2026, 11, 19, 12, 0, 0, TimeSpan.Zero);
+        return new SimulationJobResult(
+            jobId,
+            new RunSimulationRequest(2.5, 0.005, 0.1, 0.9, 4, SamplingMode.Uniform),
+            exhausted ? SimulationJobStatus.Failed : SimulationJobStatus.Pending,
+            failedAtUtc.AddMinutes(-2),
+            exhausted ? failedAtUtc.AddMinutes(-1) : null,
+            null,
+            exhausted ? failedAtUtc : null,
+            exhausted ? "Simulation persistence or completion failed." : null)
+        {
+            AttemptCount = exhausted ? 3 : 1,
+            MaxAttempts = SimulationJobRetryPolicy.Default.MaxAttempts,
+            NextAttemptAtUtc = nextAttemptAtUtc,
+            LastFailedAtUtc = failedAtUtc,
+            LastFailureMessage = "Simulation persistence or completion failed."
+        };
     }
 
     private static SimulationJobResult CreateCompletedJob(Guid jobId, Guid simulationId)
@@ -271,6 +364,7 @@ public sealed class SimulationJobWorkerTests
         {
             Leases = new ControlledLeaseRepository();
             Completion = new ControlledCompletionRepository();
+            Retries = new ControlledRetryRepository();
             Delay = new ControlledDelay();
             Logger = new RecordingLogger<SimulationJobWorker>();
             ServiceCollection services = new();
@@ -279,6 +373,10 @@ public sealed class SimulationJobWorkerTests
             services.AddScoped<ISimulationJobLeaseRepository>(provider => provider.GetRequiredService<ControlledLeaseRepository>());
             services.AddScoped<ISimulationJobRepository, ControlledJobRepository>();
             services.AddScoped<ISimulationJobCompletionRepository>(provider => provider.GetRequiredService<ControlledCompletionRepository>());
+            services.AddScoped<ISimulationJobFailureClassifier, RetryableFailureClassifier>();
+            services.AddSingleton(Retries);
+            services.AddScoped<ISimulationJobRetryRepository>(provider => provider.GetRequiredService<ControlledRetryRepository>());
+            services.AddSingleton(SimulationJobRetryPolicy.Default);
             services.AddScoped<RunSimulationHandler>();
             services.AddScoped<FailSimulationJobHandler>();
             services.AddScoped<ClaimSimulationJobLeaseHandler>();
@@ -314,6 +412,7 @@ public sealed class SimulationJobWorkerTests
 
         public ControlledLeaseRepository Leases { get; }
         public ControlledCompletionRepository Completion { get; }
+        public ControlledRetryRepository Retries { get; }
         public ControlledDelay Delay { get; }
         public RecordingLogger<SimulationJobWorker> Logger { get; }
         public SimulationJobWorker Worker { get; }
@@ -335,14 +434,20 @@ public sealed class SimulationJobWorkerTests
         public List<CancellationToken> ReceivedTokens { get; } = [];
         public Exception? ClaimException { get; set; }
         public Exception? RecoveryException { get; set; }
+        public bool BlockSecondClaim { get; set; }
 
-        public Task<SimulationJobClaim?> ClaimNextPendingAsync(TimeSpan leaseDuration, CancellationToken cancellationToken)
+        public async Task<SimulationJobClaim?> ClaimNextPendingAsync(TimeSpan leaseDuration, CancellationToken cancellationToken)
         {
             ClaimCount++;
             ReceivedLeaseDuration = leaseDuration;
             ReceivedTokens.Add(cancellationToken);
             if (ClaimException is not null) throw ClaimException;
-            return Task.FromResult(Claims.TryDequeue(out SimulationJobClaim? claim) ? claim : null);
+            if (BlockSecondClaim && ClaimCount == 2)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            return Claims.TryDequeue(out SimulationJobClaim? claim) ? claim : null;
         }
 
         public Task<DateTimeOffset?> TryRenewLeaseAsync(Guid jobId, Guid claimToken, TimeSpan leaseDuration, CancellationToken cancellationToken) =>
@@ -360,7 +465,7 @@ public sealed class SimulationJobWorkerTests
 
     private sealed class ControlledJobRepository : ISimulationJobRepository
     {
-        public Task<SimulationJobResult> CreateAsync(RunSimulationRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<SimulationJobResult> CreateAsync(RunSimulationRequest request, int maxAttempts, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> GetByIdAsync(Guid id, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> TryCompleteAsync(Guid jobId, Guid claimToken, Guid simulationId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> TryFailAsync(Guid jobId, Guid claimToken, string failureMessage, CancellationToken cancellationToken) => Task.FromResult<SimulationJobResult?>(null);
@@ -369,7 +474,36 @@ public sealed class SimulationJobWorkerTests
     private sealed class ControlledCompletionRepository : ISimulationJobCompletionRepository
     {
         public SimulationJobResult? Result { get; set; }
-        public Task<SimulationJobResult?> SaveSimulationAndCompleteAsync(Guid jobId, Guid claimToken, RunSimulationResult simulation, CancellationToken cancellationToken) => Task.FromResult(Result);
+        public Exception? Exception { get; set; }
+        public Task<SimulationJobResult?> SaveSimulationAndCompleteAsync(Guid jobId, Guid claimToken, RunSimulationResult simulation, CancellationToken cancellationToken) =>
+            Exception is null ? Task.FromResult(Result) : Task.FromException<SimulationJobResult?>(Exception);
+    }
+
+    private sealed class RetryableFailureClassifier :
+        ISimulationJobFailureClassifier
+    {
+        public SimulationJobFailureClassification Classify(
+            Exception exception,
+            SimulationJobFailurePhase phase) =>
+            SimulationJobFailureClassification.Retryable;
+    }
+
+    private sealed class ControlledRetryRepository :
+        ISimulationJobRetryRepository
+    {
+        public SimulationJobRetryDecision? Decision { get; set; }
+
+        public Task<SimulationJobRetryDecision?>
+            TryRecordRetryableFailureAsync(
+                Guid jobId,
+                Guid claimToken,
+                string safeFailureMessage,
+                TimeSpan retryDelay,
+                CancellationToken cancellationToken) =>
+            Decision is null
+                ? throw new InvalidOperationException(
+                    "Retry recording was not expected.")
+                : Task.FromResult<SimulationJobRetryDecision?>(Decision);
     }
 
     private sealed class ControlledDelay : ISimulationJobWorkerDelay

@@ -46,6 +46,20 @@ internal sealed class SimulationJobEntityConfiguration :
                     "'Completed', 'Failed', 'Cancelled')");
 
                 tableBuilder.HasCheckConstraint(
+                    "ck_simulation_jobs_retry_counters",
+                    "\"attempt_count\" >= 0 AND " +
+                    "\"max_attempts\" BETWEEN 1 AND 10 AND " +
+                    "\"attempt_count\" <= \"max_attempts\"");
+
+                tableBuilder.HasCheckConstraint(
+                    "ck_simulation_jobs_last_failure",
+                    "(\"last_failed_at_utc\" IS NULL AND " +
+                    "\"last_failure_message\" IS NULL) OR " +
+                    "(\"last_failed_at_utc\" IS NOT NULL AND " +
+                    "\"last_failure_message\" IS NOT NULL AND " +
+                    "\"last_failure_message\" ~ '[^[:space:]]')");
+
+                tableBuilder.HasCheckConstraint(
                     "ck_simulation_jobs_lifecycle",
                     "(\"status\" = 'Pending' AND " +
                     "\"claimed_at_utc\" IS NULL AND " +
@@ -53,35 +67,49 @@ internal sealed class SimulationJobEntityConfiguration :
                     "\"lease_expires_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
-                    "\"failure_message\" IS NULL) OR " +
+                    "\"failure_message\" IS NULL AND " +
+                    "\"next_attempt_at_utc\" IS NOT NULL AND " +
+                    "\"attempt_count\" < \"max_attempts\") OR " +
                     "(\"status\" = 'Running' AND " +
                     "\"claimed_at_utc\" IS NOT NULL AND " +
                     "\"claim_token\" IS NOT NULL AND " +
                     "\"lease_expires_at_utc\" IS NOT NULL AND " +
                     "\"lease_expires_at_utc\" > \"claimed_at_utc\" AND " +
+                    "\"next_attempt_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
-                    "\"failure_message\" IS NULL) OR " +
+                    "\"failure_message\" IS NULL AND " +
+                    "\"attempt_count\" >= 1 AND " +
+                    "\"attempt_count\" <= \"max_attempts\") OR " +
                     "(\"status\" = 'Completed' AND " +
                     "\"claimed_at_utc\" IS NOT NULL AND " +
                     "\"claim_token\" IS NULL AND " +
                     "\"lease_expires_at_utc\" IS NULL AND " +
+                    "\"next_attempt_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NOT NULL AND " +
-                    "\"failure_message\" IS NULL) OR " +
+                    "\"failure_message\" IS NULL AND " +
+                    "\"attempt_count\" >= 1 AND " +
+                    "\"attempt_count\" <= \"max_attempts\") OR " +
                     "(\"status\" = 'Failed' AND " +
                     "\"claimed_at_utc\" IS NOT NULL AND " +
                     "\"claim_token\" IS NULL AND " +
                     "\"lease_expires_at_utc\" IS NULL AND " +
+                    "\"next_attempt_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NOT NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
                     "\"failure_message\" IS NOT NULL AND " +
-                    "\"failure_message\" ~ '[^[:space:]]') OR " +
+                    "\"failure_message\" ~ '[^[:space:]]' AND " +
+                    "\"attempt_count\" >= 1 AND " +
+                    "\"attempt_count\" <= \"max_attempts\") OR " +
                     "(\"status\" = 'Cancelled' AND " +
                     "\"claim_token\" IS NULL AND " +
                     "\"lease_expires_at_utc\" IS NULL AND " +
+                    "\"next_attempt_at_utc\" IS NULL AND " +
                     "\"finished_at_utc\" IS NULL AND " +
                     "\"simulation_id\" IS NULL AND " +
-                    "\"failure_message\" IS NULL)");
+                    "\"failure_message\" IS NULL AND " +
+                    "\"attempt_count\" >= 0 AND " +
+                    "\"attempt_count\" <= \"max_attempts\")");
             });
 
         builder
@@ -159,6 +187,40 @@ internal sealed class SimulationJobEntityConfiguration :
             .HasColumnType("timestamp with time zone");
 
         builder
+            .Property(job => job.AttemptCount)
+            .HasColumnName("attempt_count")
+            .HasColumnType("integer")
+            .HasDefaultValue(0)
+            .ValueGeneratedOnAdd()
+            .IsRequired();
+
+        builder
+            .Property(job => job.MaxAttempts)
+            .HasColumnName("max_attempts")
+            .HasColumnType("integer")
+            .HasDefaultValue(3)
+            .ValueGeneratedOnAdd()
+            .IsRequired();
+
+        builder
+            .Property(job => job.NextAttemptAtUtc)
+            .HasColumnName("next_attempt_at_utc")
+            .HasColumnType("timestamp with time zone")
+            .HasDefaultValueSql("CURRENT_TIMESTAMP")
+            .ValueGeneratedOnAdd();
+
+        builder
+            .Property(job => job.LastFailedAtUtc)
+            .HasColumnName("last_failed_at_utc")
+            .HasColumnType("timestamp with time zone");
+
+        builder
+            .Property(job => job.LastFailureMessage)
+            .HasColumnName("last_failure_message")
+            .HasMaxLength(1000)
+            .HasColumnType("character varying(1000)");
+
+        builder
             .Property(job => job.SimulationId)
             .HasColumnName("simulation_id")
             .HasColumnType("uuid");
@@ -179,11 +241,12 @@ internal sealed class SimulationJobEntityConfiguration :
             .HasIndex(job => new
             {
                 job.Status,
+                job.NextAttemptAtUtc,
                 job.CreatedAtUtc,
                 job.Id
             })
             .HasDatabaseName(
-                "ix_simulation_jobs_status_created_at_utc_id");
+                "ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id");
 
         builder
             .HasIndex(job => new

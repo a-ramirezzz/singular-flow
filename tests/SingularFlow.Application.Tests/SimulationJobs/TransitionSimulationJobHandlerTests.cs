@@ -255,6 +255,7 @@ public sealed class TransitionSimulationJobHandlerTests
 
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,
+            int maxAttempts,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
