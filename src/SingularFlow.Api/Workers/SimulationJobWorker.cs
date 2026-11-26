@@ -129,6 +129,17 @@ internal sealed class SimulationJobWorker : BackgroundService
                                 "Simulation job lease ownership was lost. JobId={JobId}",
                                 leaseLost.JobId);
                             break;
+                        case ProcessClaimedSimulationJobResult.RetryScheduled retryScheduled:
+                            _logger.LogInformation(
+                                "Simulation job retry scheduled. JobId={JobId}, NextAttemptAtUtc={NextAttemptAtUtc}",
+                                retryScheduled.JobId,
+                                retryScheduled.NextAttemptAtUtc);
+                            break;
+                        case ProcessClaimedSimulationJobResult.Failed failedResult:
+                            _logger.LogWarning(
+                                "Simulation job exhausted its allowed attempts. JobId={JobId}",
+                                failedResult.JobId);
+                            break;
                     }
                 }
             }
@@ -280,6 +291,8 @@ internal sealed class SimulationJobWorker : BackgroundService
         {
             ProcessClaimedSimulationJobResult.Completed => result,
             ProcessClaimedSimulationJobResult.LeaseLost => result,
+            ProcessClaimedSimulationJobResult.RetryScheduled => result,
+            ProcessClaimedSimulationJobResult.Failed => result,
             null => throw new InvalidOperationException(
                 "Simulation job worker returned a null processing result."),
             _ => throw new InvalidOperationException(

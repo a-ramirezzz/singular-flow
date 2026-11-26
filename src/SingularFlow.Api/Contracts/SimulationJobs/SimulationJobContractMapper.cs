@@ -28,7 +28,10 @@ internal static class SimulationJobContractMapper
             ClaimedAtUtc: result.ClaimedAtUtc,
             FinishedAtUtc: result.FinishedAtUtc,
             SimulationId: result.SimulationId,
-            FailureMessage: result.FailureMessage);
+            FailureMessage: result.FailureMessage,
+            AttemptCount: result.AttemptCount,
+            MaxAttempts: result.MaxAttempts,
+            NextAttemptAtUtc: result.NextAttemptAtUtc);
     }
 
     private static string ToApiValue(

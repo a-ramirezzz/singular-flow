@@ -23,7 +23,8 @@ public sealed class EfSimulationJobRepository :
             finished_at_utc = CURRENT_TIMESTAMP,
             failure_message = NULL,
             claim_token = NULL,
-            lease_expires_at_utc = NULL
+            lease_expires_at_utc = NULL,
+            next_attempt_at_utc = NULL
         WHERE id = @id
           AND status = @running_status
           AND claim_token = @claim_token
@@ -41,7 +42,12 @@ public sealed class EfSimulationJobRepository :
             claimed_at_utc,
             simulation_id,
             finished_at_utc,
-            failure_message;
+            failure_message,
+            attempt_count,
+            max_attempts,
+            next_attempt_at_utc,
+            last_failed_at_utc,
+            last_failure_message;
         """;
 
     private const string FailLeasedRunningJobSql =
@@ -53,7 +59,8 @@ public sealed class EfSimulationJobRepository :
             finished_at_utc = CURRENT_TIMESTAMP,
             failure_message = @failure_message,
             claim_token = NULL,
-            lease_expires_at_utc = NULL
+            lease_expires_at_utc = NULL,
+            next_attempt_at_utc = NULL
         WHERE id = @id
           AND status = @running_status
           AND claim_token = @claim_token
@@ -71,7 +78,12 @@ public sealed class EfSimulationJobRepository :
             claimed_at_utc,
             simulation_id,
             finished_at_utc,
-            failure_message;
+            failure_message,
+            attempt_count,
+            max_attempts,
+            next_attempt_at_utc,
+            last_failed_at_utc,
+            last_failure_message;
         """;
 
     private readonly SingularFlowDbContext _context;
@@ -84,9 +96,16 @@ public sealed class EfSimulationJobRepository :
 
     public async Task<SimulationJobResult> CreateAsync(
         RunSimulationRequest request,
+        int maxAttempts,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (maxAttempts < SimulationJobRetryPolicy.MinimumAttempts ||
+            maxAttempts > SimulationJobRetryPolicy.MaximumAttemptsLimit)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        }
 
         SimulationJobEntity job = new()
         {
@@ -98,7 +117,9 @@ public sealed class EfSimulationJobRepository :
             SampleCount = request.SampleCount,
             SamplingMode = request.SamplingMode,
             Status = SimulationJobStatus.Pending,
-            ClaimedAtUtc = null
+            ClaimedAtUtc = null,
+            AttemptCount = 0,
+            MaxAttempts = maxAttempts
         };
 
         _context.SimulationJobs.Add(job);
@@ -179,7 +200,14 @@ public sealed class EfSimulationJobRepository :
             ClaimedAtUtc: job.ClaimedAtUtc,
             SimulationId: job.SimulationId,
             FinishedAtUtc: job.FinishedAtUtc,
-            FailureMessage: job.FailureMessage);
+            FailureMessage: job.FailureMessage)
+        {
+            AttemptCount = job.AttemptCount,
+            MaxAttempts = job.MaxAttempts,
+            NextAttemptAtUtc = job.NextAttemptAtUtc,
+            LastFailedAtUtc = job.LastFailedAtUtc,
+            LastFailureMessage = job.LastFailureMessage
+        };
     }
 
     private static SimulationJobResult Map(
@@ -225,7 +253,20 @@ public sealed class EfSimulationJobRepository :
                 : reader.GetFieldValue<DateTimeOffset>(11),
             FailureMessage: reader.IsDBNull(12)
                 ? null
-                : reader.GetString(12));
+                : reader.GetString(12))
+        {
+            AttemptCount = reader.GetInt32(13),
+            MaxAttempts = reader.GetInt32(14),
+            NextAttemptAtUtc = reader.IsDBNull(15)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(15),
+            LastFailedAtUtc = reader.IsDBNull(16)
+                ? null
+                : reader.GetFieldValue<DateTimeOffset>(16),
+            LastFailureMessage = reader.IsDBNull(17)
+                ? null
+                : reader.GetString(17)
+        };
     }
 
     private async Task<SimulationJobResult?> ExecuteTransitionAsync(

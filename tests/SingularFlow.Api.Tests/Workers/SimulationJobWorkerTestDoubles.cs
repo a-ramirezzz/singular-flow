@@ -95,6 +95,7 @@ internal sealed class ControlledSimulationJobRepository :
 
     public Task<SimulationJobResult> CreateAsync(
         RunSimulationRequest request,
+        int maxAttempts,
         CancellationToken cancellationToken)
     {
         throw new NotSupportedException();
@@ -149,4 +150,17 @@ internal sealed class ControlledSimulationJobCompletionRepository :
         throw new InvalidOperationException(
             "The controlled worker must not complete a job.");
     }
+}
+
+internal sealed class ControlledSimulationJobRetryRepository :
+    ISimulationJobRetryRepository
+{
+    public Task<SimulationJobRetryDecision?> TryRecordRetryableFailureAsync(
+        Guid jobId,
+        Guid claimToken,
+        string safeFailureMessage,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken) =>
+        throw new InvalidOperationException(
+            "The controlled worker must not record a retry.");
 }

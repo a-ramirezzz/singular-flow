@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 using SingularFlow.Api.ErrorHandling;
 using SingularFlow.Api.Workers;
@@ -81,6 +82,16 @@ builder.Services
         "SimulationJobs:Worker:RecoveryBatchSize must not exceed 1000.")
     .ValidateOnStart();
 
+builder.Services.AddSingleton<
+    IValidateOptions<SimulationJobRetryOptions>,
+    SimulationJobRetryOptionsValidator>();
+
+builder.Services
+    .AddOptions<SimulationJobRetryOptions>()
+    .BindConfiguration(
+        SimulationJobRetryOptions.SectionName)
+    .ValidateOnStart();
+
 builder.Services.AddDbContext<SingularFlowDbContext>(options =>
 {
     string connectionString =
@@ -107,6 +118,22 @@ builder.Services.AddScoped<RecoverExpiredSimulationJobsHandler>();
 
 builder.Services.AddScoped<ProcessClaimedSimulationJobHandler>();
 
+builder.Services.AddSingleton(serviceProvider =>
+{
+    SimulationJobRetryOptions options = serviceProvider
+        .GetRequiredService<IOptions<SimulationJobRetryOptions>>()
+        .Value;
+
+    return new SimulationJobRetryPolicy(
+        options.MaxAttempts,
+        options.BaseDelay,
+        options.MaximumDelay);
+});
+
+builder.Services.AddSingleton<
+    ISimulationJobFailureClassifier,
+    EfSimulationJobFailureClassifier>();
+
 builder.Services.AddScoped<
     ISimulationJobRepository,
     EfSimulationJobRepository>();
@@ -118,6 +145,10 @@ builder.Services.AddScoped<
 builder.Services.AddScoped<
     ISimulationJobLeaseRepository,
     EfSimulationJobLeaseRepository>();
+
+builder.Services.AddScoped<
+    ISimulationJobRetryRepository,
+    EfSimulationJobRetryRepository>();
 
 builder.Services.AddSingleton<
     ISimulationJobWorkerDelay,

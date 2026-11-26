@@ -42,9 +42,14 @@ public sealed class CreateSimulationJobHandlerTests
 
         RecordingSimulationJobRepository repository = new(
             repositoryResult);
+        SimulationJobRetryPolicy retryPolicy = new(
+            maxAttempts: 7,
+            baseDelay: TimeSpan.FromSeconds(2),
+            maximumDelay: TimeSpan.FromMinutes(1));
 
         CreateSimulationJobHandler handler = new(
-            repository);
+            repository,
+            retryPolicy);
 
         using CancellationTokenSource cancellation = new();
 
@@ -55,6 +60,7 @@ public sealed class CreateSimulationJobHandlerTests
 
         Assert.Equal(1, repository.InvocationCount);
         Assert.Same(request, repository.ReceivedRequest);
+        Assert.Equal(7, repository.ReceivedMaxAttempts);
         Assert.Equal(
             cancellation.Token,
             repository.ReceivedCancellationToken);
@@ -87,7 +93,8 @@ public sealed class CreateSimulationJobHandlerTests
             repositoryResult);
 
         CreateSimulationJobHandler handler = new(
-            repository);
+            repository,
+            SimulationJobRetryPolicy.Default);
 
         ArgumentOutOfRangeException exception =
             await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
@@ -97,6 +104,89 @@ public sealed class CreateSimulationJobHandlerTests
 
         Assert.Equal("seriesParameters", exception.ParamName);
         Assert.Equal(0, repository.InvocationCount);
+    }
+
+    [Fact]
+    public async Task HandleAsync_UnsupportedSamplingMode_ThrowsBeforeRepositoryInvocation()
+    {
+        RunSimulationRequest request = new(
+            SingularTime: 1.0,
+            ConcentrationExponent: 0.005,
+            StartTime: 0.0,
+            EndTime: 0.8,
+            SampleCount: 3,
+            SamplingMode: (SamplingMode)999);
+        SimulationJobResult repositoryResult = new(
+            Id: JobId,
+            Request: request,
+            Status: SimulationJobStatus.Pending,
+            CreatedAtUtc: CreatedAtUtc,
+            ClaimedAtUtc: null,
+            SimulationId: null,
+            FinishedAtUtc: null,
+            FailureMessage: null);
+        RecordingSimulationJobRepository repository = new(repositoryResult);
+        CreateSimulationJobHandler handler = new(
+            repository,
+            SimulationJobRetryPolicy.Default);
+
+        ArgumentOutOfRangeException exception =
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+                () => handler.HandleAsync(
+                    request,
+                    CancellationToken.None));
+
+        Assert.Equal("samplingMode", exception.ParamName);
+        Assert.Equal(0, repository.InvocationCount);
+    }
+
+    [Fact]
+    public async Task HandleAsync_DefaultPolicy_ForwardsThreeAttempts()
+    {
+        RunSimulationRequest request = new(
+            SingularTime: 1.0,
+            ConcentrationExponent: 0.005,
+            StartTime: 0.0,
+            EndTime: 0.8,
+            SampleCount: 3,
+            SamplingMode: SamplingMode.Uniform);
+        SimulationJobResult repositoryResult = new(
+            Id: JobId,
+            Request: request,
+            Status: SimulationJobStatus.Pending,
+            CreatedAtUtc: CreatedAtUtc,
+            ClaimedAtUtc: null,
+            SimulationId: null,
+            FinishedAtUtc: null,
+            FailureMessage: null);
+        RecordingSimulationJobRepository repository = new(repositoryResult);
+        CreateSimulationJobHandler handler = new(
+            repository,
+            SimulationJobRetryPolicy.Default);
+
+        await handler.HandleAsync(request, CancellationToken.None);
+
+        Assert.Equal(3, repository.ReceivedMaxAttempts);
+    }
+
+    [Fact]
+    public void Constructor_NullRetryPolicy_ThrowsArgumentNullException()
+    {
+        RecordingSimulationJobRepository repository = new(
+            new SimulationJobResult(
+                Id: JobId,
+                Request: null!,
+                Status: SimulationJobStatus.Pending,
+                CreatedAtUtc: CreatedAtUtc,
+                ClaimedAtUtc: null,
+                SimulationId: null,
+                FinishedAtUtc: null,
+                FailureMessage: null));
+
+        ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
+            () => new CreateSimulationJobHandler(repository, null!));
+
+        Assert.Equal("retryPolicy", exception.ParamName);
     }
 
     [Fact]
@@ -148,12 +238,16 @@ public sealed class CreateSimulationJobHandlerTests
             private set;
         }
 
+        public int ReceivedMaxAttempts { get; private set; }
+
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,
+            int maxAttempts,
             CancellationToken cancellationToken)
         {
             InvocationCount++;
             ReceivedRequest = request;
+            ReceivedMaxAttempts = maxAttempts;
             ReceivedCancellationToken = cancellationToken;
 
             return Task.FromResult(_result);

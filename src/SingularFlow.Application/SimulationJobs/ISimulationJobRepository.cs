@@ -6,6 +6,7 @@ public interface ISimulationJobRepository
 {
     Task<SimulationJobResult> CreateAsync(
         RunSimulationRequest request,
+        int maxAttempts,
         CancellationToken cancellationToken);
 
     Task<SimulationJobResult?> GetByIdAsync(

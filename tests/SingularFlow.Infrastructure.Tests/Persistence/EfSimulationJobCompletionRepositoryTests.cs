@@ -710,8 +710,28 @@ public sealed class EfSimulationJobCompletionRepositoryTests
         SimulationJobEntity job)
     {
         await using SingularFlowDbContext context = new(options);
-        context.SimulationJobs.Add(job);
+        if (job.Status == SimulationJobStatus.Pending)
+        {
+            context.SimulationJobs.Add(job);
+            await context.SaveChangesAsync();
+            return;
+        }
+
+        context.SimulationJobs.Add(CreateJob(job.Id, SimulationJobStatus.Pending));
         await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE simulation_jobs
+            SET status = {job.Status.ToString()},
+                claimed_at_utc = {job.ClaimedAtUtc},
+                claim_token = {job.ClaimToken},
+                lease_expires_at_utc = {job.LeaseExpiresAtUtc},
+                attempt_count = {job.AttemptCount},
+                max_attempts = {job.MaxAttempts},
+                next_attempt_at_utc = NULL,
+                finished_at_utc = {job.FinishedAtUtc},
+                failure_message = {job.FailureMessage}
+            WHERE id = {job.Id}
+            """);
     }
 
     private static SimulationJobEntity CreateJob(
@@ -740,6 +760,8 @@ public sealed class EfSimulationJobCompletionRepositoryTests
             LeaseExpiresAtUtc = status == SimulationJobStatus.Running
                 ? DateTimeOffset.UtcNow.AddMinutes(5)
                 : null,
+            AttemptCount = status == SimulationJobStatus.Pending ? 0 : 1,
+            MaxAttempts = SimulationJobRetryPolicy.Default.MaxAttempts,
             FinishedAtUtc = status is
                 SimulationJobStatus.Completed or
                 SimulationJobStatus.Failed

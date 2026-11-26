@@ -1,3 +1,5 @@
+using System.Runtime.ExceptionServices;
+
 using SingularFlow.Application.Simulations;
 
 namespace SingularFlow.Application.SimulationJobs;
@@ -18,15 +20,31 @@ public sealed class ProcessClaimedSimulationJobHandler
     private readonly ISimulationJobCompletionRepository
         _completionRepository;
     private readonly FailSimulationJobHandler _failHandler;
+    private readonly ISimulationJobFailureClassifier _failureClassifier;
+    private readonly ISimulationJobRetryRepository _retryRepository;
+    private readonly SimulationJobRetryPolicy _retryPolicy;
 
     public ProcessClaimedSimulationJobHandler(
         RunSimulationHandler runSimulationHandler,
         ISimulationJobCompletionRepository completionRepository,
-        FailSimulationJobHandler failHandler)
+        FailSimulationJobHandler failHandler,
+        ISimulationJobFailureClassifier failureClassifier,
+        ISimulationJobRetryRepository retryRepository,
+        SimulationJobRetryPolicy retryPolicy)
     {
+        ArgumentNullException.ThrowIfNull(runSimulationHandler);
+        ArgumentNullException.ThrowIfNull(completionRepository);
+        ArgumentNullException.ThrowIfNull(failHandler);
+        ArgumentNullException.ThrowIfNull(failureClassifier);
+        ArgumentNullException.ThrowIfNull(retryRepository);
+        ArgumentNullException.ThrowIfNull(retryPolicy);
+
         _runSimulationHandler = runSimulationHandler;
         _completionRepository = completionRepository;
         _failHandler = failHandler;
+        _failureClassifier = failureClassifier;
+        _retryRepository = retryRepository;
+        _retryPolicy = retryPolicy;
     }
 
     public async Task<ProcessClaimedSimulationJobResult> HandleAsync(
@@ -49,11 +67,19 @@ public sealed class ProcessClaimedSimulationJobHandler
         catch (Exception exception) when (
             exception is not OperationCanceledException)
         {
-            await TryMarkFailedAsync(
+            ProcessClaimedSimulationJobResult? failureResult =
+                await HandleFailureAsync(
                 claim,
                 ExecutionFailureMessage,
+                SimulationJobFailurePhase.Execution,
                 cancellationToken,
                 exception);
+            if (failureResult is not null)
+            {
+                return failureResult;
+            }
+
+            ExceptionDispatchInfo.Capture(exception).Throw();
             throw;
         }
 
@@ -71,11 +97,19 @@ public sealed class ProcessClaimedSimulationJobHandler
         catch (Exception exception) when (
             exception is not OperationCanceledException)
         {
-            await TryMarkFailedAsync(
+            ProcessClaimedSimulationJobResult? failureResult =
+                await HandleFailureAsync(
                 claim,
                 FinalizationFailureMessage,
+                SimulationJobFailurePhase.Persistence,
                 cancellationToken,
                 exception);
+            if (failureResult is not null)
+            {
+                return failureResult;
+            }
+
+            ExceptionDispatchInfo.Capture(exception).Throw();
             throw;
         }
 
@@ -90,6 +124,85 @@ public sealed class ProcessClaimedSimulationJobHandler
         return new ProcessClaimedSimulationJobResult.Completed(
             completedJob.Id,
             completedJob.SimulationId!.Value);
+    }
+
+    private async Task<ProcessClaimedSimulationJobResult?>
+        HandleFailureAsync(
+            SimulationJobClaim claim,
+            string failureMessage,
+            SimulationJobFailurePhase phase,
+            CancellationToken cancellationToken,
+            Exception originalException)
+    {
+        SimulationJobFailureClassification classification;
+
+        try
+        {
+            classification = _failureClassifier.Classify(
+                originalException,
+                phase);
+        }
+        catch (Exception)
+        {
+            await TryMarkFailedAsync(
+                claim,
+                failureMessage,
+                cancellationToken,
+                originalException);
+            return null;
+        }
+
+        if (classification ==
+            SimulationJobFailureClassification.NonRetryable)
+        {
+            await TryMarkFailedAsync(
+                claim,
+                failureMessage,
+                cancellationToken,
+                originalException);
+            return null;
+        }
+
+        SimulationJobRetryDecision? decision;
+
+        try
+        {
+            TimeSpan retryDelay = _retryPolicy.GetDelayAfterAttempt(
+                claim.Job.AttemptCount);
+            decision =
+                await _retryRepository.TryRecordRetryableFailureAsync(
+                    claim.Job.Id,
+                    claim.ClaimToken,
+                    failureMessage,
+                    retryDelay,
+                    cancellationToken);
+        }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        if (decision is null)
+        {
+            return new ProcessClaimedSimulationJobResult.LeaseLost(
+                claim.Job.Id);
+        }
+
+        return decision switch
+        {
+            SimulationJobRetryDecision.Scheduled scheduled =>
+                CreateScheduledResult(claim, scheduled.Job),
+            SimulationJobRetryDecision.Exhausted exhausted =>
+                CreateExhaustedResult(claim, exhausted.Job),
+            _ => throw new InvalidOperationException(
+                "Retry persistence returned an unknown decision.")
+        };
     }
 
     private async Task TryMarkFailedAsync(
@@ -161,6 +274,134 @@ public sealed class ProcessClaimedSimulationJobHandler
         {
             throw new InvalidOperationException(
                 "Completed simulation job has no claim timestamp.");
+        }
+    }
+
+    private static ProcessClaimedSimulationJobResult CreateScheduledResult(
+        SimulationJobClaim claim,
+        SimulationJobResult job)
+    {
+        if (job.Id != claim.Job.Id)
+        {
+            throw new InvalidOperationException(
+                "Scheduled retry job ID does not match the claim.");
+        }
+
+        if (job.Status != SimulationJobStatus.Pending)
+        {
+            throw new InvalidOperationException(
+                "Scheduled retry returned a job that is not Pending.");
+        }
+
+        if (job.ClaimedAtUtc is not null)
+        {
+            throw new InvalidOperationException(
+                "Scheduled retry job still has a claim timestamp.");
+        }
+
+        if (job.FinishedAtUtc is not null ||
+            job.SimulationId is not null ||
+            job.FailureMessage is not null)
+        {
+            throw new InvalidOperationException(
+                "Scheduled retry job has terminal metadata.");
+        }
+
+        if (job.NextAttemptAtUtc is null)
+        {
+            throw new InvalidOperationException(
+                "Scheduled retry job has no next-attempt timestamp.");
+        }
+
+        ValidateUnchangedAttempts(claim, job);
+
+        if (job.AttemptCount >= job.MaxAttempts)
+        {
+            throw new InvalidOperationException(
+                "Scheduled retry job has exhausted its attempts.");
+        }
+
+        ValidateIntermediateFailure(job, "Scheduled retry");
+
+        return new ProcessClaimedSimulationJobResult.RetryScheduled(
+            job.Id,
+            job.NextAttemptAtUtc.Value);
+    }
+
+    private static ProcessClaimedSimulationJobResult CreateExhaustedResult(
+        SimulationJobClaim claim,
+        SimulationJobResult job)
+    {
+        if (job.Id != claim.Job.Id)
+        {
+            throw new InvalidOperationException(
+                "Exhausted retry job ID does not match the claim.");
+        }
+
+        if (job.Status != SimulationJobStatus.Failed)
+        {
+            throw new InvalidOperationException(
+                "Exhausted retry returned a job that is not Failed.");
+        }
+
+        if (job.ClaimedAtUtc is null || job.FinishedAtUtc is null)
+        {
+            throw new InvalidOperationException(
+                "Exhausted retry job has incomplete terminal timestamps.");
+        }
+
+        if (job.SimulationId is not null ||
+            string.IsNullOrWhiteSpace(job.FailureMessage))
+        {
+            throw new InvalidOperationException(
+                "Exhausted retry job has invalid terminal metadata.");
+        }
+
+        if (job.NextAttemptAtUtc is not null)
+        {
+            throw new InvalidOperationException(
+                "Exhausted retry job still has a next-attempt timestamp.");
+        }
+
+        ValidateUnchangedAttempts(claim, job);
+
+        if (job.AttemptCount != job.MaxAttempts)
+        {
+            throw new InvalidOperationException(
+                "Exhausted retry job has remaining attempts.");
+        }
+
+        ValidateIntermediateFailure(job, "Exhausted retry");
+
+        return new ProcessClaimedSimulationJobResult.Failed(job.Id);
+    }
+
+    private static void ValidateUnchangedAttempts(
+        SimulationJobClaim claim,
+        SimulationJobResult job)
+    {
+        if (job.AttemptCount != claim.Job.AttemptCount)
+        {
+            throw new InvalidOperationException(
+                "Retry persistence changed the attempt count.");
+        }
+
+        if (job.MaxAttempts != claim.Job.MaxAttempts)
+        {
+            throw new InvalidOperationException(
+                "Retry persistence changed the maximum attempts.");
+        }
+    }
+
+    private static void ValidateIntermediateFailure(
+        SimulationJobResult job,
+        string decisionName)
+    {
+        if (job.LastFailedAtUtc is null ||
+            string.IsNullOrWhiteSpace(job.LastFailureMessage))
+        {
+            throw new InvalidOperationException(
+                $"{decisionName} job has invalid intermediate-failure metadata.");
         }
     }
 }

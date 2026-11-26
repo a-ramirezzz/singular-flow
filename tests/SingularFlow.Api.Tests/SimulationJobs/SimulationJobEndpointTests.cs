@@ -45,7 +45,11 @@ public sealed class SimulationJobEndpointTests :
     public async Task PostSimulationJob_ValidRequest_ReturnsAcceptedSnapshotAndLocation()
     {
         SimulationJobResult configured = CreateResult(
-            SimulationJobStatus.Pending);
+            SimulationJobStatus.Pending) with
+        {
+            MaxAttempts = 10,
+            NextAttemptAtUtc = CreatedAtUtc
+        };
         _factory.ConfigureCreateResult(configured);
 
         using HttpResponseMessage response =
@@ -64,8 +68,10 @@ public sealed class SimulationJobEndpointTests :
         using JsonDocument document = await ReadJsonAsync(response);
         AssertSnapshot(
             document.RootElement,
-            configured,
+            configured with { MaxAttempts = 3 },
             "pending");
+        Assert.Equal(0, document.RootElement.GetProperty("attemptCount").GetInt32());
+        Assert.Equal(3, _factory.ReceivedMaxAttempts);
 
         Assert.Equal(1, _factory.CreateCount);
         Assert.Equal(0, _factory.GetCount);
@@ -222,7 +228,16 @@ public sealed class SimulationJobEndpointTests :
         SimulationJobStatus status,
         string expectedStatus)
     {
-        SimulationJobResult configured = CreateLifecycleResult(status);
+        SimulationJobResult configured = CreateLifecycleResult(status) with
+        {
+            AttemptCount = 2,
+            MaxAttempts = 10,
+            NextAttemptAtUtc = status == SimulationJobStatus.Pending
+                ? new DateTimeOffset(2099, 1, 2, 3, 4, 5, TimeSpan.Zero)
+                : null,
+            LastFailedAtUtc = CreatedAtUtc.AddSeconds(1),
+            LastFailureMessage = "Internal retry failure must stay private."
+        };
         _factory.ConfigureLookup(configured);
 
         using HttpResponseMessage response =
@@ -419,6 +434,17 @@ public sealed class SimulationJobEndpointTests :
         SimulationJobResult expected,
         string expectedStatus)
     {
+        Assert.Equal(
+            new[]
+            {
+                "id", "status", "request", "createdAtUtc", "claimedAtUtc",
+                "finishedAtUtc", "simulationId", "failureMessage",
+                "attemptCount", "maxAttempts", "nextAttemptAtUtc"
+            }.Order(),
+            root.EnumerateObject().Select(property => property.Name).Order());
+        Assert.Equal(expected.AttemptCount, root.GetProperty("attemptCount").GetInt32());
+        Assert.Equal(expected.MaxAttempts, root.GetProperty("maxAttempts").GetInt32());
+        AssertNullableDateTimeOffset(root, "nextAttemptAtUtc", expected.NextAttemptAtUtc);
         Assert.Equal(expected.Id, root.GetProperty("id").GetGuid());
         Assert.Equal(expectedStatus, root.GetProperty("status").GetString());
 

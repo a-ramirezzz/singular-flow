@@ -109,6 +109,7 @@ public sealed class GetSimulationJobHandlerTests
 
         public Task<SimulationJobResult> CreateAsync(
             RunSimulationRequest request,
+            int maxAttempts,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 

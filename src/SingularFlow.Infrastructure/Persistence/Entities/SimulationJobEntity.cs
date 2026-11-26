@@ -30,6 +30,16 @@ public sealed class SimulationJobEntity
 
     public DateTimeOffset? LeaseExpiresAtUtc { get; set; }
 
+    public int AttemptCount { get; set; }
+
+    public int MaxAttempts { get; set; }
+
+    public DateTimeOffset? NextAttemptAtUtc { get; set; }
+
+    public DateTimeOffset? LastFailedAtUtc { get; set; }
+
+    public string? LastFailureMessage { get; set; }
+
     public Guid? SimulationId { get; set; }
 
     public DateTimeOffset? FinishedAtUtc { get; set; }

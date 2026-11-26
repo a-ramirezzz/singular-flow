@@ -14,25 +14,32 @@ public sealed class SimulationJobTerminalConfigurationTests
         "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL " +
         "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
         "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
-        "AND \"failure_message\" IS NULL) OR " +
+        "AND \"failure_message\" IS NULL AND \"next_attempt_at_utc\" IS NOT NULL " +
+        "AND \"attempt_count\" < \"max_attempts\") OR " +
         "(\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL " +
         "AND \"claim_token\" IS NOT NULL " +
         "AND \"lease_expires_at_utc\" IS NOT NULL " +
         "AND \"lease_expires_at_utc\" > \"claimed_at_utc\" " +
-        "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
-        "AND \"failure_message\" IS NULL) OR " +
+        "AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL " +
+        "AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL " +
+        "AND \"attempt_count\" >= 1 AND \"attempt_count\" <= \"max_attempts\") OR " +
         "(\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL " +
         "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
-        "AND \"finished_at_utc\" IS NOT NULL " +
-        "AND \"failure_message\" IS NULL) OR " +
+        "AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL " +
+        "AND \"failure_message\" IS NULL AND \"attempt_count\" >= 1 " +
+        "AND \"attempt_count\" <= \"max_attempts\") OR " +
         "(\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL " +
         "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
-        "AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL " +
+        "AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL " +
+        "AND \"simulation_id\" IS NULL " +
         "AND \"failure_message\" IS NOT NULL " +
-        "AND \"failure_message\" ~ '[^[:space:]]') OR " +
+        "AND \"failure_message\" ~ '[^[:space:]]' AND \"attempt_count\" >= 1 " +
+        "AND \"attempt_count\" <= \"max_attempts\") OR " +
         "(\"status\" = 'Cancelled' AND \"claim_token\" IS NULL " +
-        "AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL " +
-        "AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)";
+        "AND \"lease_expires_at_utc\" IS NULL AND \"next_attempt_at_utc\" IS NULL " +
+        "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
+        "AND \"failure_message\" IS NULL AND \"attempt_count\" >= 0 " +
+        "AND \"attempt_count\" <= \"max_attempts\")";
 
     [Fact]
     public void Model_MapsTerminalColumnsWithApprovedNullabilityAndGeneration()
@@ -151,7 +158,7 @@ public sealed class SimulationJobTerminalConfigurationTests
         Assert.Contains(
             jobIndexes,
             index => index.GetDatabaseName() ==
-                "ix_simulation_jobs_status_created_at_utc_id");
+                "ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id");
     }
 
     private static IProperty AssertProperty(

@@ -13,4 +13,14 @@ public sealed record SimulationJobResult(
     string? FailureMessage)
 {
     public const int MaximumFailureMessageLength = 1000;
+
+    public int AttemptCount { get; init; }
+
+    public int MaxAttempts { get; init; } = 3;
+
+    public DateTimeOffset? NextAttemptAtUtc { get; init; }
+
+    public DateTimeOffset? LastFailedAtUtc { get; init; }
+
+    public string? LastFailureMessage { get; init; }
 }

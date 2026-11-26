@@ -327,7 +327,10 @@ public sealed class OpenApiEndpointTests :
                 ["claimedAtUtc"] = "string",
                 ["finishedAtUtc"] = "string",
                 ["simulationId"] = "string",
-                ["failureMessage"] = "string"
+                ["failureMessage"] = "string",
+                ["attemptCount"] = "integer",
+                ["maxAttempts"] = "integer",
+                ["nextAttemptAtUtc"] = "string"
             });
 
         JsonElement properties = schema.GetProperty("properties");
@@ -342,6 +345,17 @@ public sealed class OpenApiEndpointTests :
                 .GetProperty("format")
                 .GetString());
 
+        Assert.Equal(
+            "date-time",
+            properties.GetProperty("nextAttemptAtUtc")
+                .GetProperty("format")
+                .GetString());
+        AssertNonNullableIntegerSchema(
+            properties.GetProperty("attemptCount"));
+        AssertNonNullableIntegerSchema(
+            properties.GetProperty("maxAttempts"));
+        AssertNullableSchema(
+            properties.GetProperty("nextAttemptAtUtc"));
         AssertNullableSchema(
             properties.GetProperty("claimedAtUtc"));
         AssertNullableSchema(
@@ -387,6 +401,19 @@ public sealed class OpenApiEndpointTests :
                     root,
                     properties.GetProperty(propertyName)),
                 expectedType);
+        }
+    }
+
+    private static void AssertNonNullableIntegerSchema(JsonElement schema)
+    {
+        AssertSchemaIncludesType(schema, "integer");
+        JsonElement type = schema.GetProperty("type");
+        if (type.ValueKind == JsonValueKind.Array)
+        {
+            Assert.DoesNotContain(
+                "null",
+                type.EnumerateArray()
+                    .Select(element => element.GetString()));
         }
     }
 

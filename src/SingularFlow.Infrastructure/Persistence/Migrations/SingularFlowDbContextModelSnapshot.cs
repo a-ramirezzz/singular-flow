@@ -88,6 +88,12 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("attempt_count");
+
                     b.Property<Guid?>("ClaimToken")
                         .HasColumnType("uuid")
                         .HasColumnName("claim_token");
@@ -119,9 +125,30 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("finished_at_utc");
 
+                    b.Property<DateTimeOffset?>("LastFailedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_failed_at_utc");
+
+                    b.Property<string>("LastFailureMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("last_failure_message");
+
                     b.Property<DateTimeOffset?>("LeaseExpiresAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("lease_expires_at_utc");
+
+                    b.Property<int>("MaxAttempts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(3)
+                        .HasColumnName("max_attempts");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at_utc")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.Property<int>("SampleCount")
                         .HasColumnType("integer")
@@ -157,11 +184,11 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
                     b.HasIndex("SimulationId")
                         .HasDatabaseName("ix_simulation_jobs_simulation_id");
 
-                    b.HasIndex("Status", "CreatedAtUtc", "Id")
-                        .HasDatabaseName("ix_simulation_jobs_status_created_at_utc_id");
-
                     b.HasIndex("Status", "LeaseExpiresAtUtc", "Id")
                         .HasDatabaseName("ix_simulation_jobs_status_lease_expires_at_utc_id");
+
+                    b.HasIndex("Status", "NextAttemptAtUtc", "CreatedAtUtc", "Id")
+                        .HasDatabaseName("ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id");
 
                     b.ToTable("simulation_jobs", null, t =>
                         {
@@ -169,7 +196,11 @@ namespace SingularFlow.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_simulation_jobs_end_time", "\"end_time\" > \"start_time\"");
 
-                            t.HasCheckConstraint("ck_simulation_jobs_lifecycle", "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NOT NULL AND \"lease_expires_at_utc\" IS NOT NULL AND \"lease_expires_at_utc\" > \"claimed_at_utc\" AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL AND \"failure_message\" IS NULL) OR (\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NOT NULL AND \"failure_message\" ~ '[^[:space:]]') OR (\"status\" = 'Cancelled' AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)");
+                            t.HasCheckConstraint("ck_simulation_jobs_last_failure", "(\"last_failed_at_utc\" IS NULL AND \"last_failure_message\" IS NULL) OR (\"last_failed_at_utc\" IS NOT NULL AND \"last_failure_message\" IS NOT NULL AND \"last_failure_message\" ~ '[^[:space:]]')");
+
+                            t.HasCheckConstraint("ck_simulation_jobs_lifecycle", "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL AND \"next_attempt_at_utc\" IS NOT NULL AND \"attempt_count\" < \"max_attempts\") OR (\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NOT NULL AND \"lease_expires_at_utc\" IS NOT NULL AND \"lease_expires_at_utc\" > \"claimed_at_utc\" AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL AND \"attempt_count\" >= 1 AND \"attempt_count\" <= \"max_attempts\") OR (\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL AND \"failure_message\" IS NULL AND \"attempt_count\" >= 1 AND \"attempt_count\" <= \"max_attempts\") OR (\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NOT NULL AND \"failure_message\" ~ '[^[:space:]]' AND \"attempt_count\" >= 1 AND \"attempt_count\" <= \"max_attempts\") OR (\"status\" = 'Cancelled' AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL AND \"attempt_count\" >= 0 AND \"attempt_count\" <= \"max_attempts\")");
+
+                            t.HasCheckConstraint("ck_simulation_jobs_retry_counters", "\"attempt_count\" >= 0 AND \"max_attempts\" BETWEEN 1 AND 10 AND \"attempt_count\" <= \"max_attempts\"");
 
                             t.HasCheckConstraint("ck_simulation_jobs_sample_count", "\"sample_count\" >= 2 AND \"sample_count\" <= 100000");
 

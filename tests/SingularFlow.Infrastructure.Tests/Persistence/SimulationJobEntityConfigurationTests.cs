@@ -90,11 +90,12 @@ public sealed class SimulationJobEntityConfigurationTests
             entityType.GetIndexes(),
             candidate =>
                 candidate.GetDatabaseName() ==
-                "ix_simulation_jobs_status_created_at_utc_id");
+                "ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id");
         Assert.Equal(
             new[]
             {
                 nameof(SimulationJobEntity.Status),
+                nameof(SimulationJobEntity.NextAttemptAtUtc),
                 nameof(SimulationJobEntity.CreatedAtUtc),
                 nameof(SimulationJobEntity.Id)
             },
@@ -114,7 +115,7 @@ public sealed class SimulationJobEntityConfigurationTests
         IReadOnlyList<ICheckConstraint> constraints =
             entityType.GetCheckConstraints().ToArray();
 
-        Assert.Equal(7, constraints.Count);
+        Assert.Equal(9, constraints.Count);
         AssertConstraint(constraints, "ck_simulation_jobs_sample_count",
             "\"sample_count\" >= 2 AND \"sample_count\" <= 100000");
         AssertConstraint(constraints,
@@ -132,29 +133,48 @@ public sealed class SimulationJobEntityConfigurationTests
 
         AssertConstraint(
             constraints,
+            "ck_simulation_jobs_retry_counters",
+            "\"attempt_count\" >= 0 AND \"max_attempts\" BETWEEN 1 AND 10 " +
+            "AND \"attempt_count\" <= \"max_attempts\"");
+        AssertConstraint(
+            constraints,
+            "ck_simulation_jobs_last_failure",
+            "(\"last_failed_at_utc\" IS NULL AND \"last_failure_message\" IS NULL) OR " +
+            "(\"last_failed_at_utc\" IS NOT NULL AND \"last_failure_message\" IS NOT NULL " +
+            "AND \"last_failure_message\" ~ '[^[:space:]]')");
+
+        AssertConstraint(
+            constraints,
             "ck_simulation_jobs_lifecycle",
             "(\"status\" = 'Pending' AND \"claimed_at_utc\" IS NULL " +
             "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
             "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
-            "AND \"failure_message\" IS NULL) OR " +
+            "AND \"failure_message\" IS NULL AND \"next_attempt_at_utc\" IS NOT NULL " +
+            "AND \"attempt_count\" < \"max_attempts\") OR " +
             "(\"status\" = 'Running' AND \"claimed_at_utc\" IS NOT NULL " +
             "AND \"claim_token\" IS NOT NULL " +
             "AND \"lease_expires_at_utc\" IS NOT NULL " +
             "AND \"lease_expires_at_utc\" > \"claimed_at_utc\" " +
-            "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
-            "AND \"failure_message\" IS NULL) OR " +
+            "AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL " +
+            "AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL " +
+            "AND \"attempt_count\" >= 1 AND \"attempt_count\" <= \"max_attempts\") OR " +
             "(\"status\" = 'Completed' AND \"claimed_at_utc\" IS NOT NULL " +
             "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
-            "AND \"finished_at_utc\" IS NOT NULL " +
-            "AND \"failure_message\" IS NULL) OR " +
+            "AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL " +
+            "AND \"failure_message\" IS NULL AND \"attempt_count\" >= 1 " +
+            "AND \"attempt_count\" <= \"max_attempts\") OR " +
             "(\"status\" = 'Failed' AND \"claimed_at_utc\" IS NOT NULL " +
             "AND \"claim_token\" IS NULL AND \"lease_expires_at_utc\" IS NULL " +
-            "AND \"finished_at_utc\" IS NOT NULL AND \"simulation_id\" IS NULL " +
+            "AND \"next_attempt_at_utc\" IS NULL AND \"finished_at_utc\" IS NOT NULL " +
+            "AND \"simulation_id\" IS NULL " +
             "AND \"failure_message\" IS NOT NULL " +
-            "AND \"failure_message\" ~ '[^[:space:]]') OR " +
+            "AND \"failure_message\" ~ '[^[:space:]]' AND \"attempt_count\" >= 1 " +
+            "AND \"attempt_count\" <= \"max_attempts\") OR " +
             "(\"status\" = 'Cancelled' AND \"claim_token\" IS NULL " +
-            "AND \"lease_expires_at_utc\" IS NULL AND \"finished_at_utc\" IS NULL " +
-            "AND \"simulation_id\" IS NULL AND \"failure_message\" IS NULL)");
+            "AND \"lease_expires_at_utc\" IS NULL AND \"next_attempt_at_utc\" IS NULL " +
+            "AND \"finished_at_utc\" IS NULL AND \"simulation_id\" IS NULL " +
+            "AND \"failure_message\" IS NULL AND \"attempt_count\" >= 0 " +
+            "AND \"attempt_count\" <= \"max_attempts\")");
     }
 
     [Fact]
@@ -167,18 +187,19 @@ public sealed class SimulationJobEntityConfigurationTests
             entityType.GetIndexes(),
             candidate =>
                 candidate.GetDatabaseName() ==
-                "ix_simulation_jobs_status_created_at_utc_id");
+                "ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id");
 
         Assert.Equal(
             new[]
             {
                 nameof(SimulationJobEntity.Status),
+                nameof(SimulationJobEntity.NextAttemptAtUtc),
                 nameof(SimulationJobEntity.CreatedAtUtc),
                 nameof(SimulationJobEntity.Id)
             },
             index.Properties.Select(property => property.Name));
         Assert.Equal(
-            "ix_simulation_jobs_status_created_at_utc_id",
+            "ix_simulation_jobs_status_next_attempt_at_utc_created_at_utc_id",
             index.GetDatabaseName());
         Assert.False(index.IsUnique);
         IForeignKey foreignKey = Assert.Single(

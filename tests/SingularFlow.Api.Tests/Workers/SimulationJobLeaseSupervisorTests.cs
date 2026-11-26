@@ -535,7 +535,11 @@ public sealed class SimulationJobLeaseSupervisorTests
             claimedAt,
             null,
             null,
-            null);
+            null)
+        {
+            AttemptCount = 1,
+            MaxAttempts = 3
+        };
         return new SimulationJobClaim(
             job,
             Guid.Parse("5cf6aefc-7ca9-43ba-a237-eb255b37c61d"),
@@ -551,7 +555,10 @@ public sealed class SimulationJobLeaseSupervisorTests
         ProcessClaimedSimulationJobHandler handler = new(
             new RunSimulationHandler(),
             completion,
-            new FailSimulationJobHandler(jobs));
+            new FailSimulationJobHandler(jobs),
+            new NonRetryableFailureClassifier(),
+            new RejectingRetryRepository(),
+            SimulationJobRetryPolicy.Default);
         completion.Handler = handler;
         return new RecordingScope(
             new ControlledServiceProvider(processingHandler: handler),
@@ -756,7 +763,7 @@ public sealed class SimulationJobLeaseSupervisorTests
         public int FencedFailureCount { get; private set; }
 
         public Task<SimulationJobResult> CreateAsync(RunSimulationRequest request,
-            CancellationToken cancellationToken) => throw new NotSupportedException();
+            int maxAttempts, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> GetByIdAsync(Guid id,
             CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<SimulationJobResult?> TryCompleteAsync(Guid jobId, Guid claimToken,
@@ -767,6 +774,29 @@ public sealed class SimulationJobLeaseSupervisorTests
             FencedFailureCount++;
             return Task.FromResult<SimulationJobResult?>(null);
         }
+    }
+
+    private sealed class NonRetryableFailureClassifier :
+        ISimulationJobFailureClassifier
+    {
+        public SimulationJobFailureClassification Classify(
+            Exception exception,
+            SimulationJobFailurePhase phase) =>
+            SimulationJobFailureClassification.NonRetryable;
+    }
+
+    private sealed class RejectingRetryRepository :
+        ISimulationJobRetryRepository
+    {
+        public Task<SimulationJobRetryDecision?>
+            TryRecordRetryableFailureAsync(
+                Guid jobId,
+                Guid claimToken,
+                string safeFailureMessage,
+                TimeSpan retryDelay,
+                CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "Retry recording was not expected.");
     }
 
     private sealed class RecordingLogger<T> : ILogger<T>
